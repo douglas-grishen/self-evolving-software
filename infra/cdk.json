@@ -1,0 +1,12 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "@aws-cdk/core:stackRelativeExports": true,
+
+    "project_name": "self-evolving-software",
+    "instance_type": "t3.medium",
+    "ebs_data_size_gb": 30,
+    "github_branch": "main",
+    "ssh_cidr": "0.0.0.0/0"
+  }
+}

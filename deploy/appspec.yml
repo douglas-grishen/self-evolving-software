@@ -1,0 +1,18 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /opt/self-evolving-software
+hooks:
+  ApplicationStop:
+    - location: deploy/scripts/stop.sh
+      timeout: 120
+      runas: root
+  BeforeInstall:
+    - location: deploy/scripts/install.sh
+      timeout: 600
+      runas: root
+  ApplicationStart:
+    - location: deploy/scripts/start.sh
+      timeout: 300
+      runas: root

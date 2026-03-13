@@ -1,0 +1,193 @@
+###############################################################################
+# Production docker-compose — runs on a single EC2 instance
+#
+# Architecture: MAPE-K (Monitor, Analyze, Plan, Execute, Knowledge)
+#
+#   ┌───────────────────────────────────────────────────────────────┐
+#   │  MANAGED SYSTEM (managed-system network)                      │
+#   │  The web application under autonomous management              │
+#   │                                                               │
+#   │  ┌──────────┐  ┌──────────┐  ┌─────────────────────────────┐ │
+#   │  │ postgres │──│ backend  │──│ frontend (Nginx :80)        │─┼─► Users
+#   │  │ (5432)   │  │ (8000)   │  │ proxies /api → 8000        │ │
+#   │  └──────────┘  └────┬─────┘  └─────────────────────────────┘ │
+#   └──────────────────────┼────────────────────────────────────────┘
+#                          │ control-plane network
+#                          │ (runtime monitoring: health, metrics, logs)
+#   ┌──────────────────────┼────────────────────────────────────────┐
+#   │  AUTONOMIC MANAGER   │      (autonomic-manager network)       │
+#   │  AI engine — continuous MAPE-K feedback loop                  │
+#   │                      │                                        │
+#   │  ┌───────────────────┴──────────────────────────────────────┐ │
+#   │  │ engine                                                   │ │
+#   │  │                                                          │ │
+#   │  │ MONITOR ─► ANALYZE ─► PLAN ─► EXECUTE ─► KNOWLEDGE      │ │
+#   │  │   │          │         │        │            │           │ │
+#   │  │   │          │         │        │            └──► loop   │ │
+#   │  │   │          │         │        ├─ Generator              │ │
+#   │  │   │          │         │        └─ Validator (sandbox)    │ │
+#   │  │   │          │         └─ Leader                         │ │
+#   │  │   │          └─ DataManager                              │ │
+#   │  │   └─ Runtime Observer (health, metrics, logs, errors)    │ │
+#   │  └──────────────────────────────────────────────────────────┘ │
+#   │       │              │              │                         │
+#   │       ▼ LLM          ▼ sandbox      ▼ deploy                 │
+#   │    AWS Bedrock   Docker socket   Git + Pipeline              │
+#   └───────────────────────────────────────────────────────────────┘
+#
+# Three Docker networks enforce architectural boundaries:
+#   managed-system:     internal comms (postgres ↔ backend ↔ frontend)
+#   control-plane:      engine → backend (read-only runtime monitoring)
+#   autonomic-manager:  engine isolation (LLM, sandbox, deploy)
+#
+# The engine's interfaces to the outside world:
+#   1. Control plane   — HTTP to backend monitoring API (runtime state)
+#   2. File system     — read-only mount of full repo (code scanning)
+#   3. Docker socket   — sandbox containers + managed system log access
+#   4. Git + Pipeline  — deployment of approved changes
+#   5. AWS Bedrock     — LLM inference via IAM role
+#
+# Self-modification: the engine can evolve its own code (evolving_engine/)
+# in addition to the managed app (managed_app/).
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml logs -f
+#   docker compose -f docker-compose.prod.yml down
+#
+# Requires a .env file with POSTGRES_PASSWORD set.
+###############################################################################
+
+
+# =============================================================================
+# MANAGED SYSTEM — The web application under autonomous management
+# Network: managed-system (internal) + control-plane (monitoring by engine)
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-managed_app}
+    volumes:
+      - /mnt/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - managed-system
+    labels:
+      com.ses.subsystem: "managed-system"
+      com.ses.role: "database"
+
+  backend:
+    build: ./managed_app/backend
+    restart: always
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-managed_app}
+      APP_DEBUG: "false"
+      APP_ENVIRONMENT: production
+      APP_ALLOWED_ORIGINS: '["http://${PUBLIC_HOST:-localhost}", "https://${PUBLIC_HOST:-localhost}"]'
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - managed-system
+      - control-plane
+    labels:
+      com.ses.subsystem: "managed-system"
+      com.ses.role: "backend-api"
+
+  frontend:
+    build:
+      context: ./managed_app/frontend
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - managed-system
+    labels:
+      com.ses.subsystem: "managed-system"
+      com.ses.role: "frontend-proxy"
+
+
+# =============================================================================
+# AUTONOMIC MANAGER — AI engine running the continuous MAPE-K loop
+#
+# Monitor:  Observes the running Managed System (health, metrics, logs, errors)
+# Analyze:  Scans codebase, builds repo map, identifies gaps vs goals
+# Plan:     Interprets observations + goals into structured evolution plans
+# Execute:  Generates code, validates in sandbox, deploys via Git + CI/CD
+# Knowledge: Stores outcomes, learns from successes/failures, feeds back
+#
+# Self-evolution: the engine can modify its own code (evolving_engine/)
+# to improve its agents, prompts, strategies, and analysis capabilities.
+#
+# Networks: autonomic-manager (isolated) + control-plane (→ backend monitoring)
+# =============================================================================
+
+  engine:
+    build: ./evolving_engine
+    restart: always
+    environment:
+      # --- Scope: what the engine can observe and modify ---
+      ENGINE_MANAGED_APP_PATH: /workspace/managed_app
+      ENGINE_SELF_PATH: /workspace/evolving_engine
+      ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
+      ENGINE_REPO_ROOT: /workspace
+      # --- Runtime monitoring ---
+      ENGINE_MONITOR_URL: http://backend:8000
+      ENGINE_MONITOR_INTERVAL_SECONDS: "60"
+      # --- LLM Provider (Bedrock via EC2 IAM role) ---
+      ENGINE_LLM_PROVIDER: bedrock
+      ENGINE_BEDROCK_REGION: ${AWS_REGION:-us-east-1}
+      # --- Sandbox (Docker-based validation) ---
+      ENGINE_SANDBOX_TYPE: docker
+      # --- Deployment ---
+      ENGINE_GIT_AUTO_COMMIT: "true"
+      # --- Observability ---
+      ENGINE_LOG_LEVEL: INFO
+    volumes:
+      # Full repository (read-only for scanning both subsystems)
+      - .:/workspace:ro
+      # Docker socket for sandbox containers + reading managed system logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - autonomic-manager
+      - control-plane
+    labels:
+      com.ses.subsystem: "autonomic-manager"
+      com.ses.role: "mape-k-engine"
+
+
+# =============================================================================
+# NETWORK TOPOLOGY — Three networks enforce MAPE-K boundaries
+#
+#   managed-system:      postgres ↔ backend ↔ frontend (internal traffic)
+#   control-plane:       engine → backend (runtime monitoring, read-only)
+#   autonomic-manager:   engine (LLM calls, sandbox, Git, AWS APIs)
+#
+# The engine can observe the managed system's runtime behavior through the
+# control-plane, but cannot directly access postgres or frontend.
+# =============================================================================
+
+networks:
+  managed-system:
+    name: managed-system
+    driver: bridge
+  control-plane:
+    name: control-plane
+    driver: bridge
+  autonomic-manager:
+    name: autonomic-manager
+    driver: bridge

@@ -111,5 +111,10 @@ logs/
 secrets/
 credentials/
 
+# CDK deployment — personal values and generated output (never commit these)
+infra/deploy.env
+infra/cdk.context.json
+infra/cdk.out/
+
 # Claude Code internals (keep worktrees out of tracked files)
 .claude/worktrees/
