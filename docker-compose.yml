@@ -1,0 +1,133 @@
+###############################################################################
+# Local development docker-compose
+#
+# Architecture: MAPE-K — three Docker networks enforce subsystem boundaries
+#   managed-system:      postgres ↔ backend ↔ frontend
+#   control-plane:       engine → backend (runtime monitoring)
+#   autonomic-manager:   engine (LLM, sandbox, Git)
+#
+# Usage:
+#   docker compose up                          # Managed System only
+#   docker compose --profile engine up         # + Autonomic Manager
+#   docker compose up backend                  # Backend + postgres only
+#   docker compose logs -f engine              # Follow engine logs
+###############################################################################
+
+
+# =============================================================================
+# MANAGED SYSTEM — The web application under autonomous management
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: managed_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - managed-system
+    labels:
+      com.ses.subsystem: "managed-system"
+
+  backend:
+    build: ./managed_app/backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      APP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/managed_app
+      APP_DEBUG: "true"
+      APP_ENVIRONMENT: development
+      APP_ALLOWED_ORIGINS: '["http://localhost:5173"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./managed_app/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - managed-system
+      - control-plane
+    labels:
+      com.ses.subsystem: "managed-system"
+
+  frontend:
+    build:
+      context: ./managed_app/frontend
+      target: build
+    command: npx vite --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./managed_app/frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - managed-system
+    labels:
+      com.ses.subsystem: "managed-system"
+
+
+# =============================================================================
+# AUTONOMIC MANAGER — AI engine with continuous MAPE-K loop
+# Profile-gated: only starts when explicitly requested via --profile engine
+# Self-evolution enabled: can modify both managed_app/ and evolving_engine/
+# =============================================================================
+
+  engine:
+    build: ./evolving_engine
+    environment:
+      # --- Scope ---
+      ENGINE_MANAGED_APP_PATH: /workspace/managed_app
+      ENGINE_SELF_PATH: /workspace/evolving_engine
+      ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
+      ENGINE_REPO_ROOT: /workspace
+      # --- Runtime monitoring ---
+      ENGINE_MONITOR_URL: http://backend:8000
+      ENGINE_MONITOR_INTERVAL_SECONDS: "30"
+      # --- LLM ---
+      ENGINE_LLM_PROVIDER: anthropic
+      ENGINE_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ENGINE_LOG_LEVEL: DEBUG
+      # --- Sandbox ---
+      ENGINE_SANDBOX_TYPE: docker
+    volumes:
+      - .:/workspace:ro
+      - ./evolving_engine:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - autonomic-manager
+      - control-plane
+    profiles:
+      - engine
+    labels:
+      com.ses.subsystem: "autonomic-manager"
+
+
+# =============================================================================
+# NETWORKS — Three isolated networks enforce MAPE-K boundaries
+# =============================================================================
+
+networks:
+  managed-system:
+    name: managed-system-dev
+    driver: bridge
+  control-plane:
+    name: control-plane-dev
+    driver: bridge
+  autonomic-manager:
+    name: autonomic-manager-dev
+    driver: bridge
+
+volumes:
+  pgdata:
