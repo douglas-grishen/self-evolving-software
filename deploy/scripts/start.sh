@@ -16,7 +16,7 @@ docker compose -f docker-compose.prod.yml up -d
 # Wait for backend health check (up to 120s for first-time postgres init)
 echo "Waiting for backend health check..."
 for i in $(seq 1 60); do
-    if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+    if docker compose -f docker-compose.prod.yml exec -T backend curl -sf http://localhost:8000/health > /dev/null 2>&1; then
         echo "Backend is healthy!"
         exit 0
     fi
