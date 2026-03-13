@@ -138,6 +138,7 @@ services:
 
   engine:
     build: ./evolving_engine
+    command: ["--continuous"]
     restart: always
     environment:
       # --- Scope: what the engine can observe and modify ---
