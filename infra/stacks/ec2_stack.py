@@ -157,6 +157,12 @@ class Ec2Stack(Stack):
             "chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose",
             "ln -sf $DOCKER_CONFIG/cli-plugins/docker-compose /usr/local/bin/docker-compose",
             "",
+            "# --- Docker Buildx plugin (required by Compose v5+) ---",
+            'BUILDX_ARCH=$([ "$ARCH" = "x86_64" ] && echo amd64 || echo arm64)',
+            'curl -SL "https://github.com/docker/buildx/releases/download/v0.21.2/buildx-v0.21.2.linux-${BUILDX_ARCH}" '
+            "-o $DOCKER_CONFIG/cli-plugins/docker-buildx",
+            "chmod +x $DOCKER_CONFIG/cli-plugins/docker-buildx",
+            "",
             "# --- CodeDeploy agent ---",
             "cd /tmp",
             f"wget https://aws-codedeploy-{region}.s3.{region}.amazonaws.com/latest/install",
