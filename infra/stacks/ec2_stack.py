@@ -111,14 +111,37 @@ class Ec2Stack(Stack):
             )
         )
 
+        # KMS + S3 — CodeDeploy needs to decrypt and download CodePipeline artifacts
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:GenerateDataKey",
+                ],
+                resources=["*"],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:GetBucketVersioning",
+                ],
+                resources=["*"],
+            )
+        )
+
         # ── User Data Script ────────────────────────────────────────────────
         user_data = ec2.UserData.for_linux()
         user_data.add_commands(
             "set -euxo pipefail",
             "",
             "# --- System packages ---",
+            "# Note: curl-minimal conflicts with curl on AL2023; use --allowerasing to replace it",
             "dnf update -y",
-            "dnf install -y docker git ruby wget curl",
+            "dnf install -y docker git ruby wget --allowerasing",
             "",
             "# --- Docker ---",
             "systemctl enable docker",
