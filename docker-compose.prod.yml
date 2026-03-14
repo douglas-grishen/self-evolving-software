@@ -149,9 +149,11 @@ services:
       # --- Runtime monitoring ---
       ENGINE_MONITOR_URL: http://backend:8000
       ENGINE_MONITOR_INTERVAL_SECONDS: "60"
-      # --- LLM Provider (Bedrock via EC2 IAM role) ---
-      ENGINE_LLM_PROVIDER: bedrock
+      # --- LLM Provider (from .env: anthropic or bedrock) ---
+      ENGINE_LLM_PROVIDER: ${ENGINE_LLM_PROVIDER:-bedrock}
       ENGINE_BEDROCK_REGION: ${AWS_REGION:-us-east-1}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20241022}
       # --- Sandbox (Docker-based validation) ---
       ENGINE_SANDBOX_TYPE: docker
       # --- Deployment ---
