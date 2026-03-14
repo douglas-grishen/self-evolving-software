@@ -34,8 +34,7 @@ from engine.agents.leader import LeaderAgent
 from engine.agents.validator import CodeValidatorAgent
 from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext, create_context
-from engine.deployer.git_ops import GitDeployer
-from engine.deployer.pipeline import PipelineTrigger
+from engine.deployer.git_ops import LocalDeployer
 from engine.models.evolution import DeploymentResult, EvolutionStatus, EvolutionSource
 from engine.monitor.models import Anomaly, AnomalyType, RuntimeSnapshot
 from engine.monitor.observer import RuntimeObserver
@@ -86,9 +85,8 @@ class Orchestrator:
         self.generator = CodeGeneratorAgent(provider=self.provider, config=self.config)
         self.validator = CodeValidatorAgent(sandbox=self.sandbox, config=self.config)
 
-        # Deployer
-        self.git_deployer = GitDeployer(self.config)
-        self.pipeline_trigger = PipelineTrigger(self.config)
+        # Deployer (local only — never pushes to GitHub)
+        self.deployer = LocalDeployer(self.config)
 
         # Runtime observer (Monitor phase)
         self.observer = RuntimeObserver(
@@ -362,7 +360,11 @@ class Orchestrator:
         return mapping.get(status)
 
     async def _deploy(self, ctx: EvolutionContext) -> EvolutionContext:
-        """Handle the deployment phase: git commit + push, then trigger pipeline."""
+        """Handle the deployment phase: local git commit + Docker rebuild.
+
+        Deploys to the local evolved-app directory. Never pushes to GitHub.
+        The open-source repo stays clean — only framework code lives there.
+        """
         if ctx.request.dry_run:
             logger.info("deploy.dry_run", request_id=ctx.request_id)
             return ctx.model_copy(
@@ -375,15 +377,13 @@ class Orchestrator:
                 }
             )
 
-        result = await self.git_deployer.deploy(ctx)
-        ctx = ctx.add_event("deployer", "git_deploy", "completed" if result.success else "failed")
+        result = await self.deployer.deploy(ctx)
+        ctx = ctx.add_event(
+            "deployer", "local_deploy", "completed" if result.success else "failed"
+        )
 
         if not result.success:
             return ctx.fail(f"Deployment failed: {result.message}")
-
-        execution_id = await self.pipeline_trigger.trigger()
-        if execution_id:
-            result = result.model_copy(update={"pipeline_execution_id": execution_id})
 
         return ctx.model_copy(
             update={

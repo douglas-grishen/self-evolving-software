@@ -1,10 +1,27 @@
-"""Git operations — automated commit and push for validated code changes."""
+"""Local Deployer — applies validated code to the local evolved-app repo.
 
+Architecture: two-layer separation for open-source compatibility.
+
+  /opt/self-evolving-software/   (Framework — from GitHub, read-only)
+  /opt/evolved-app/              (Instance code — local git, NEVER pushed)
+
+The engine generates and validates code in a sandbox, then this deployer:
+1. Copies validated files to /opt/evolved-app/
+2. Commits to the LOCAL git repo (for history + rollback)
+3. Rebuilds Docker images via docker compose
+4. Restarts affected services
+
+The open-source repo on GitHub stays clean — only framework/engine code lives there.
+Instance-specific evolved code lives exclusively on the EC2 instance.
+"""
+
+import asyncio
 import shutil
 from pathlib import Path
 
 import structlog
 from git import Repo
+from git.exc import InvalidGitRepositoryError
 
 from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext
@@ -13,22 +30,27 @@ from engine.models.evolution import DeploymentResult
 logger = structlog.get_logger()
 
 
-class GitDeployer:
-    """Handles git operations for deploying validated code to the repository."""
+class LocalDeployer:
+    """Deploys validated code to the local evolved-app directory.
+
+    Lifecycle:
+    - ``deploy(ctx)`` — copy files, git commit locally, rebuild Docker
+    - ``rollback()`` — revert last commit, rebuild Docker
+    """
 
     def __init__(self, config: EngineSettings | None = None) -> None:
         self.config = config or settings
 
     async def deploy(self, context: EvolutionContext) -> DeploymentResult:
-        """Apply generated files to the managed app repo, commit, and push.
+        """Apply generated files to evolved-app, commit locally, and rebuild.
 
         Steps:
-        1. Copy validated files from workspace to managed_app/
-        2. Create a feature branch
-        3. Stage and commit changes
-        4. Push to remote
+        1. Ensure evolved-app repo exists (bootstrap if first run)
+        2. Copy validated files from workspace to evolved-app/
+        3. Git add + commit (local only — never push)
+        4. Rebuild and restart Docker services
         """
-        managed_app_path = Path(self.config.managed_app_path).resolve()
+        evolved_path = Path(self.config.evolved_app_path).resolve()
         workspace = Path(self.config.workspace_path) / context.request_id
 
         if not workspace.exists():
@@ -37,67 +59,180 @@ class GitDeployer:
                 message=f"Workspace not found: {workspace}",
             )
 
-        try:
-            repo = Repo(managed_app_path.parent)  # Root repo containing managed_app/
-        except Exception as exc:
+        # Ensure evolved-app exists and is a git repo
+        repo = self._ensure_repo(evolved_path)
+        if repo is None:
             return DeploymentResult(
                 success=False,
-                message=f"Git repository not found: {exc}",
+                message=f"Could not initialize evolved-app repo at {evolved_path}",
             )
 
-        # Create feature branch
-        branch_name = f"{self.config.git_branch_prefix}/{context.request_id[:8]}"
-        try:
-            repo.git.checkout("-b", branch_name)
-            logger.info("git.branch_created", branch=branch_name)
-        except Exception as exc:
-            logger.warning("git.branch_exists", branch=branch_name, error=str(exc))
-
-        # Copy generated files to managed_app/
+        # Copy generated files to evolved-app/
+        files_copied = 0
         for gen_file in context.generated_files:
             src = workspace / gen_file.file_path
-            dst = managed_app_path / gen_file.file_path
+            dst = evolved_path / gen_file.file_path
 
             if gen_file.action == "delete":
                 dst.unlink(missing_ok=True)
-                logger.debug("git.file_deleted", path=gen_file.file_path)
+                logger.debug("deploy.file_deleted", path=gen_file.file_path)
+                files_copied += 1
             elif src.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
-                logger.debug("git.file_copied", path=gen_file.file_path)
+                logger.debug("deploy.file_copied", path=gen_file.file_path)
+                files_copied += 1
 
-        # Stage and commit
-        repo.git.add("managed_app/")
+        # Git commit (local only)
+        commit_sha = self._commit(repo, context)
 
-        summary = context.plan.summary if context.plan else "Autonomous evolution"
-        commit_message = (
-            f"feat(evolution): {summary}\n\n"
-            f"Request ID: {context.request_id}\n"
-            f"Files changed: {len(context.generated_files)}\n"
-            f"Risk score: {context.validation_result.risk_score if context.validation_result else 'N/A'}\n\n"
-            f"Generated by Self-Evolving Software Engine"
-        )
+        # Rebuild and restart Docker services
+        rebuild_ok, rebuild_msg = await self._rebuild_services()
 
-        commit = repo.index.commit(commit_message)
-        logger.info("git.committed", sha=commit.hexsha[:8], branch=branch_name)
-
-        # Push to remote
-        try:
-            origin = repo.remote("origin")
-            origin.push(branch_name)
-            logger.info("git.pushed", branch=branch_name)
-        except Exception as exc:
-            logger.warning("git.push_failed", error=str(exc))
+        if not rebuild_ok:
+            # Rollback the commit if rebuild fails
+            logger.warning("deploy.rebuild_failed — rolling back", error=rebuild_msg)
+            self._rollback(repo)
+            await self._rebuild_services()  # Rebuild with previous code
             return DeploymentResult(
-                success=True,  # Commit succeeded even if push failed
-                commit_sha=commit.hexsha,
-                branch=branch_name,
-                message=f"Committed locally but push failed: {exc}",
+                success=False,
+                commit_sha=commit_sha,
+                message=f"Rebuild failed (rolled back): {rebuild_msg}",
             )
+
+        logger.info(
+            "deploy.success",
+            commit_sha=commit_sha[:8] if commit_sha else "none",
+            files=files_copied,
+        )
 
         return DeploymentResult(
             success=True,
-            commit_sha=commit.hexsha,
-            branch=branch_name,
-            message=f"Successfully deployed to {branch_name}",
+            commit_sha=commit_sha,
+            message=f"Deployed {files_copied} files locally (commit {commit_sha[:8]})",
         )
+
+    def _ensure_repo(self, path: Path) -> Repo | None:
+        """Ensure path is a git repo. Bootstrap from managed_app template if needed."""
+        try:
+            return Repo(path)
+        except (InvalidGitRepositoryError, Exception):
+            pass
+
+        # Bootstrap: copy managed_app template and init git
+        managed_app_src = Path(self.config.managed_app_path).resolve()
+        if not managed_app_src.exists():
+            logger.error("deploy.bootstrap_failed", reason="managed_app_path not found")
+            return None
+
+        try:
+            logger.info("deploy.bootstrap", source=str(managed_app_src), target=str(path))
+            path.mkdir(parents=True, exist_ok=True)
+
+            # Copy template (backend/ and frontend/)
+            for item in managed_app_src.iterdir():
+                dst = path / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dst)
+
+            # Init git repo
+            repo = Repo.init(path)
+            repo.git.add("-A")
+            repo.index.commit("initial: base template from managed_app")
+            logger.info("deploy.bootstrap_complete")
+            return repo
+
+        except Exception as exc:
+            logger.error("deploy.bootstrap_error", error=str(exc))
+            return None
+
+    def _commit(self, repo: Repo, context: EvolutionContext) -> str:
+        """Create a local git commit with evolution metadata."""
+        try:
+            repo.git.add("-A")
+
+            # Check if there are actual changes to commit
+            if not repo.is_dirty() and not repo.untracked_files:
+                logger.info("deploy.no_changes")
+                return ""
+
+            summary = context.plan.summary if context.plan else "Autonomous evolution"
+            risk = context.validation_result.risk_score if context.validation_result else "N/A"
+
+            message = (
+                f"evo: {summary}\n\n"
+                f"Request ID: {context.request_id}\n"
+                f"Source: {context.request.source.value}\n"
+                f"Files changed: {len(context.generated_files)}\n"
+                f"Risk score: {risk}\n\n"
+                f"Generated by Self-Evolving Software Engine"
+            )
+
+            commit = repo.index.commit(message)
+            logger.info("deploy.committed", sha=commit.hexsha[:8])
+            return commit.hexsha
+
+        except Exception as exc:
+            logger.error("deploy.commit_error", error=str(exc))
+            return ""
+
+    def _rollback(self, repo: Repo) -> bool:
+        """Revert the last commit (for failed rebuilds)."""
+        try:
+            repo.git.revert("HEAD", "--no-edit")
+            logger.info("deploy.rollback_success")
+            return True
+        except Exception as exc:
+            logger.error("deploy.rollback_error", error=str(exc))
+            return False
+
+    async def _rebuild_services(self) -> tuple[bool, str]:
+        """Rebuild and restart managed system Docker services.
+
+        Only rebuilds backend and frontend — the engine and postgres are
+        managed by the framework compose file separately.
+        """
+        deploy_root = Path(self.config.deploy_root).resolve()
+        compose_file = self.config.compose_file
+
+        if not (deploy_root / compose_file).exists():
+            return False, f"Compose file not found: {deploy_root / compose_file}"
+
+        try:
+            # Rebuild backend + frontend images
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", str(deploy_root / compose_file),
+                "build", "backend", "frontend",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(deploy_root),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+
+            if proc.returncode != 0:
+                return False, f"Build failed: {stderr.decode()[-1000:]}"
+
+            logger.info("deploy.build_success")
+
+            # Restart only backend + frontend (not engine, not postgres)
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "compose", "-f", str(deploy_root / compose_file),
+                "up", "-d", "--no-deps", "backend", "frontend",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(deploy_root),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+
+            if proc.returncode != 0:
+                return False, f"Restart failed: {stderr.decode()[-1000:]}"
+
+            logger.info("deploy.restart_success")
+            return True, "Services rebuilt and restarted"
+
+        except asyncio.TimeoutError:
+            return False, "Docker rebuild/restart timed out"
+        except Exception as exc:
+            return False, str(exc)

@@ -64,12 +64,19 @@ class EngineSettings(BaseSettings):
     sandbox_timeout_seconds: int = 300
 
     # ---------------------------------------------------------------------------
-    # Deployment
+    # Deployment (local — never pushes to GitHub)
     # ---------------------------------------------------------------------------
 
-    git_auto_commit: bool = True
-    git_branch_prefix: str = "evolution"
-    pipeline_name: str = ""
+    # Path to the evolved application code (local git repo, never pushed)
+    # This is separate from managed_app_path (the read-only template from GitHub).
+    evolved_app_path: Path = Path("/opt/evolved-app")
+
+    # Docker compose file used to rebuild managed system services after evolution
+    compose_file: str = "docker-compose.prod.yml"
+
+    # Root of the framework deployment (where compose file lives)
+    deploy_root: Path = Path("/opt/self-evolving-software")
+
     aws_region: str = "us-east-1"
 
     # ---------------------------------------------------------------------------
