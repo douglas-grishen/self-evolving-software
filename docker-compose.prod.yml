@@ -153,7 +153,7 @@ services:
       ENGINE_LLM_PROVIDER: ${ENGINE_LLM_PROVIDER:-bedrock}
       ENGINE_BEDROCK_REGION: ${AWS_REGION:-us-east-1}
       ENGINE_ANTHROPIC_API_KEY: ${ENGINE_ANTHROPIC_API_KEY:-}
-      ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20241022}
+      ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
       # --- Sandbox (Docker-based validation) ---
       ENGINE_SANDBOX_TYPE: docker
       # --- Deployment ---
