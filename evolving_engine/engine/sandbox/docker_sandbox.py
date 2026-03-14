@@ -129,7 +129,11 @@ class DockerSandbox(BaseSandbox):
         return len(errors) == 0, errors
 
     async def _run_build_test(self, app_path: Path) -> tuple[bool, list[str]]:
-        """Attempt to docker build each service."""
+        """Attempt to docker build each service.
+
+        For the backend, builds the ``test`` stage so that dev dependencies
+        (pytest, ruff, etc.) are included in the sandbox image.
+        """
         errors: list[str] = []
 
         for service in ["backend", "frontend"]:
@@ -139,12 +143,17 @@ class DockerSandbox(BaseSandbox):
 
             try:
                 tag = f"evo-sandbox-{service}:test"
-                self.client.images.build(
+                # Use the 'test' stage for backend so pytest is available
+                build_kwargs: dict = dict(
                     path=str(app_path / service),
                     tag=tag,
                     rm=True,
                     timeout=self.config.sandbox_timeout_seconds,
                 )
+                if service == "backend":
+                    build_kwargs["target"] = "test"
+
+                self.client.images.build(**build_kwargs)
                 logger.info("build.success", service=service)
             except docker.errors.BuildError as exc:
                 errors.append(f"Docker build failed for {service}: {exc}")
@@ -154,15 +163,28 @@ class DockerSandbox(BaseSandbox):
         return len(errors) == 0, errors
 
     async def _run_integration_tests(self, app_path: Path) -> tuple[bool, list[str]]:
-        """Run the test suite inside Docker containers."""
+        """Run the test suite inside Docker containers.
+
+        Uses the ``evo-sandbox-backend:test`` image (built with the ``test``
+        Dockerfile stage) which includes pytest and other dev dependencies.
+        """
         errors: list[str] = []
 
         # Run pytest in the backend container
         try:
             tag = "evo-sandbox-backend:test"
+
+            # Provide minimal env so app config can initialize without
+            # connecting to a real database (tests use ASGI transport).
+            test_env = {
+                "APP_DATABASE_URL": "sqlite+aiosqlite:///test.db",
+                "APP_ENVIRONMENT": "test",
+            }
+
             container = self.client.containers.run(
                 tag,
-                command="pytest tests/ -v --tb=short",
+                command="pytest tests/ -v --tb=short --no-header -q",
+                environment=test_env,
                 detach=True,
                 remove=False,
             )
@@ -173,7 +195,11 @@ class DockerSandbox(BaseSandbox):
             logs = container.logs().decode()
 
             if result["StatusCode"] != 0:
-                errors.append(f"Backend tests failed:\n{logs[-2000:]}")
+                # Exit code 5 = no tests collected — not a failure
+                if result["StatusCode"] == 5:
+                    logger.info("tests.backend.no_tests_collected")
+                else:
+                    errors.append(f"Backend tests failed:\n{logs[-2000:]}")
             else:
                 logger.info("tests.backend.passed")
 

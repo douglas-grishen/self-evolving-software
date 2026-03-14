@@ -40,7 +40,9 @@ services:
       com.ses.subsystem: "managed-system"
 
   backend:
-    build: ./managed_app/backend
+    build:
+      context: ./managed_app/backend
+      target: base
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       APP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/managed_app
