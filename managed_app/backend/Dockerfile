@@ -19,3 +19,11 @@ EXPOSE 8000
 
 # Run with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ---------- Test stage (used by the evolving-engine sandbox) ----------
+FROM base AS test
+
+# Install dev/test dependencies (pytest, ruff, etc.)
+RUN pip install --no-cache-dir ".[dev]"
+
+CMD ["pytest", "tests/", "-v", "--tb=short"]

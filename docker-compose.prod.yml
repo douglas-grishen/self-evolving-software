@@ -86,7 +86,9 @@ services:
       com.ses.role: "database"
 
   backend:
-    build: ./managed_app/backend
+    build:
+      context: ./managed_app/backend
+      target: base
     restart: always
     environment:
       APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-managed_app}
