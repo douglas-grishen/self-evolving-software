@@ -134,6 +134,34 @@ class EventReporter:
     # Purpose
     # ------------------------------------------------------------------
 
+    async def fetch_purpose(self) -> Purpose | None:
+        """Fetch the current Purpose from the backend DB.
+
+        This is used at engine startup so the engine works with
+        the Purpose defined by the admin via the UI — not a local file.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self._evolution_url}/purpose")
+                resp.raise_for_status()
+                data = resp.json()
+
+            if data is None or data.get("content_yaml") is None:
+                logger.info("event_reporter.no_purpose_in_db")
+                return None
+
+            purpose = Purpose.from_yaml_string(data["content_yaml"])
+            logger.info(
+                "event_reporter.purpose_fetched",
+                version=purpose.version,
+                identity=purpose.identity.name,
+            )
+            return purpose
+
+        except Exception as exc:
+            logger.debug("event_reporter.fetch_purpose_error", error=str(exc))
+            return None
+
     async def post_purpose(self, purpose: Purpose, inception_id: str | None = None) -> None:
         """Store a purpose version in the backend DB."""
         payload = {
