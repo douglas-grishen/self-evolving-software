@@ -103,6 +103,10 @@ services:
       ENGINE_LOG_LEVEL: DEBUG
       # --- Sandbox ---
       ENGINE_SANDBOX_TYPE: docker
+      # --- Local deploy (dev: evolved-app = managed_app) ---
+      ENGINE_EVOLVED_APP_PATH: /workspace/managed_app
+      ENGINE_DEPLOY_ROOT: /workspace
+      ENGINE_COMPOSE_FILE: docker-compose.yml
     volumes:
       - .:/workspace:ro
       - ./evolving_engine:/app

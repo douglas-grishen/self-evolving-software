@@ -1,11 +1,17 @@
 ###############################################################################
 # Production docker-compose — runs on a single EC2 instance
 #
-# Architecture: MAPE-K (Monitor, Analyze, Plan, Execute, Knowledge)
+# Two-layer architecture for open-source compatibility:
+#
+#   /opt/self-evolving-software/   Framework (from GitHub via CodeDeploy)
+#   /opt/evolved-app/              Evolved code (local git, never pushed)
+#
+# The engine evolves code in /opt/evolved-app/ (backend + frontend).
+# The framework repo on GitHub stays clean — no instance-specific code.
 #
 #   ┌───────────────────────────────────────────────────────────────┐
 #   │  MANAGED SYSTEM (managed-system network)                      │
-#   │  The web application under autonomous management              │
+#   │  Built from /opt/evolved-app/ (locally evolved code)          │
 #   │                                                               │
 #   │  ┌──────────┐  ┌──────────┐  ┌─────────────────────────────┐ │
 #   │  │ postgres │──│ backend  │──│ frontend (Nginx :80)        │─┼─► Users
@@ -13,42 +19,17 @@
 #   │  └──────────┘  └────┬─────┘  └─────────────────────────────┘ │
 #   └──────────────────────┼────────────────────────────────────────┘
 #                          │ control-plane network
-#                          │ (runtime monitoring: health, metrics, logs)
 #   ┌──────────────────────┼────────────────────────────────────────┐
 #   │  AUTONOMIC MANAGER   │      (autonomic-manager network)       │
 #   │  AI engine — continuous MAPE-K feedback loop                  │
-#   │                      │                                        │
+#   │                                                               │
 #   │  ┌───────────────────┴──────────────────────────────────────┐ │
 #   │  │ engine                                                   │ │
-#   │  │                                                          │ │
 #   │  │ MONITOR ─► ANALYZE ─► PLAN ─► EXECUTE ─► KNOWLEDGE      │ │
-#   │  │   │          │         │        │            │           │ │
-#   │  │   │          │         │        │            └──► loop   │ │
-#   │  │   │          │         │        ├─ Generator              │ │
-#   │  │   │          │         │        └─ Validator (sandbox)    │ │
-#   │  │   │          │         └─ Leader                         │ │
-#   │  │   │          └─ DataManager                              │ │
-#   │  │   └─ Runtime Observer (health, metrics, logs, errors)    │ │
+#   │  │   Local deploy: copy to evolved-app → git commit local   │ │
+#   │  │   → docker compose build → restart services              │ │
 #   │  └──────────────────────────────────────────────────────────┘ │
-#   │       │              │              │                         │
-#   │       ▼ LLM          ▼ sandbox      ▼ deploy                 │
-#   │    AWS Bedrock   Docker socket   Git + Pipeline              │
 #   └───────────────────────────────────────────────────────────────┘
-#
-# Three Docker networks enforce architectural boundaries:
-#   managed-system:     internal comms (postgres ↔ backend ↔ frontend)
-#   control-plane:      engine → backend (read-only runtime monitoring)
-#   autonomic-manager:  engine isolation (LLM, sandbox, deploy)
-#
-# The engine's interfaces to the outside world:
-#   1. Control plane   — HTTP to backend monitoring API (runtime state)
-#   2. File system     — read-only mount of full repo (code scanning)
-#   3. Docker socket   — sandbox containers + managed system log access
-#   4. Git + Pipeline  — deployment of approved changes
-#   5. AWS Bedrock     — LLM inference via IAM role
-#
-# Self-modification: the engine can evolve its own code (evolving_engine/)
-# in addition to the managed app (managed_app/).
 #
 # Usage:
 #   docker compose -f docker-compose.prod.yml up -d --build
@@ -60,8 +41,7 @@
 
 
 # =============================================================================
-# MANAGED SYSTEM — The web application under autonomous management
-# Network: managed-system (internal) + control-plane (monitoring by engine)
+# MANAGED SYSTEM — Built from evolved-app (locally evolved code)
 # =============================================================================
 
 services:
@@ -87,7 +67,7 @@ services:
 
   backend:
     build:
-      context: ./managed_app/backend
+      context: /opt/evolved-app/backend
       target: base
     restart: always
     environment:
@@ -109,7 +89,7 @@ services:
 
   frontend:
     build:
-      context: ./managed_app/frontend
+      context: /opt/evolved-app/frontend
       dockerfile: Dockerfile
     restart: always
     ports:
@@ -126,16 +106,10 @@ services:
 # =============================================================================
 # AUTONOMIC MANAGER — AI engine running the continuous MAPE-K loop
 #
-# Monitor:  Observes the running Managed System (health, metrics, logs, errors)
-# Analyze:  Scans codebase, builds repo map, identifies gaps vs goals
-# Plan:     Interprets observations + goals into structured evolution plans
-# Execute:  Generates code, validates in sandbox, deploys via Git + CI/CD
-# Knowledge: Stores outcomes, learns from successes/failures, feeds back
-#
-# Self-evolution: the engine can modify its own code (evolving_engine/)
-# to improve its agents, prompts, strategies, and analysis capabilities.
-#
-# Networks: autonomic-manager (isolated) + control-plane (→ backend monitoring)
+# Volumes:
+#   /workspace (ro)      — framework repo for scanning templates + engine code
+#   /opt/evolved-app (rw) — the locally evolved app code (deploy target)
+#   docker.sock          — sandbox containers + managed system log access
 # =============================================================================
 
   engine:
@@ -148,6 +122,10 @@ services:
       ENGINE_SELF_PATH: /workspace/evolving_engine
       ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
       ENGINE_REPO_ROOT: /workspace
+      # --- Local deploy (never pushes to GitHub) ---
+      ENGINE_EVOLVED_APP_PATH: /opt/evolved-app
+      ENGINE_DEPLOY_ROOT: /opt/self-evolving-software
+      ENGINE_COMPOSE_FILE: docker-compose.prod.yml
       # --- Runtime monitoring ---
       ENGINE_MONITOR_URL: http://backend:8000
       ENGINE_MONITOR_INTERVAL_SECONDS: "60"
@@ -158,13 +136,13 @@ services:
       ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
       # --- Sandbox (Docker-based validation) ---
       ENGINE_SANDBOX_TYPE: docker
-      # --- Deployment ---
-      ENGINE_GIT_AUTO_COMMIT: "true"
       # --- Observability ---
       ENGINE_LOG_LEVEL: INFO
     volumes:
-      # Full repository (read-only for scanning both subsystems)
+      # Framework repo (read-only — for scanning templates and engine code)
       - .:/workspace:ro
+      # Evolved app (read-write — deploy target for local evolutions)
+      - /opt/evolved-app:/opt/evolved-app
       # Docker socket for sandbox containers + reading managed system logs
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -176,14 +154,11 @@ services:
 
 
 # =============================================================================
-# NETWORK TOPOLOGY — Three networks enforce MAPE-K boundaries
+# NETWORK TOPOLOGY
 #
-#   managed-system:      postgres ↔ backend ↔ frontend (internal traffic)
-#   control-plane:       engine → backend (runtime monitoring, read-only)
+#   managed-system:      postgres <-> backend <-> frontend (internal traffic)
+#   control-plane:       engine -> backend (runtime monitoring, read-only)
 #   autonomic-manager:   engine (LLM calls, sandbox, Git, AWS APIs)
-#
-# The engine can observe the managed system's runtime behavior through the
-# control-plane, but cannot directly access postgres or frontend.
 # =============================================================================
 
 networks:
