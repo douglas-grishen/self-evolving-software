@@ -19,6 +19,12 @@ if [ ! -f "$APP_DIR/.env" ] && [ -f /home/ec2-user/.env ]; then
     cp /home/ec2-user/.env "$APP_DIR/.env"
 fi
 
+# Ensure git is installed on the host (needed for evolved-app local repo)
+if ! command -v git &> /dev/null; then
+    echo "Installing git..."
+    yum install -y git 2>/dev/null || dnf install -y git 2>/dev/null || apt-get install -y git 2>/dev/null
+fi
+
 # ---------------------------------------------------------------------------
 # Bootstrap evolved-app on first deploy
 # ---------------------------------------------------------------------------
