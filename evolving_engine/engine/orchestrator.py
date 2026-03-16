@@ -191,12 +191,15 @@ class Orchestrator:
         """Run the autonomous MAPE-K loop indefinitely.
 
         The loop:
-          1. MONITOR  — observe the Managed System via the control-plane
-          2. ANALYZE  — detect anomalies in the snapshot
-          3. PLAN     — convert each anomaly into a natural language request
-          4. EXECUTE  — run the evolution pipeline for each request
-          5. KNOWLEDGE — log outcomes; the next iteration learns from them
-          6. Wait for the configured interval, then repeat
+          1. FETCH PURPOSE — load latest Purpose from backend API (admin-defined)
+          2. PROCESS INCEPTIONS — apply pending Purpose modifications
+          3. MONITOR  — observe the Managed System via the control-plane
+          4. ANALYZE  — detect anomalies in the snapshot
+          5. PLAN     — convert anomalies into evolution requests (reactive)
+          6. PROACTIVE ANALYZE — compare Purpose vs codebase, find gaps
+          7. EXECUTE  — run the evolution pipeline for each request
+          8. KNOWLEDGE — log outcomes; the next iteration learns from them
+          9. Wait for the configured interval, then repeat
 
         This method runs until cancelled (e.g., via KeyboardInterrupt or
         Docker SIGTERM). It never raises — all errors are logged and the
@@ -204,6 +207,12 @@ class Orchestrator:
         """
         self._running = True
         interval = self.config.monitor_interval_seconds
+
+        # Fetch Purpose from backend API (admin defined it via UI)
+        if not self.purpose:
+            self.purpose = await self._fetch_purpose_from_api()
+            if self.purpose:
+                self.leader.purpose = self.purpose
 
         logger.info(
             "continuous_loop.start",
@@ -221,7 +230,25 @@ class Orchestrator:
             try:
                 # Process pending Inceptions before monitoring
                 await self._process_pending_inceptions()
+
+                # Refresh Purpose from API if we don't have one yet
+                if not self.purpose:
+                    self.purpose = await self._fetch_purpose_from_api()
+                    if self.purpose:
+                        self.leader.purpose = self.purpose
+                        logger.info(
+                            "purpose.loaded_from_api",
+                            version=self.purpose.version,
+                            identity=self.purpose.identity.name,
+                        )
+
+                # Reactive monitoring (anomalies → fix bugs)
                 await self._mape_k_iteration()
+
+                # Proactive evolution (Purpose → build features)
+                if self.purpose:
+                    await self._proactive_evolution()
+
             except asyncio.CancelledError:
                 logger.info("continuous_loop.cancelled")
                 break
@@ -384,6 +411,142 @@ class Orchestrator:
         return request_text
 
     # -----------------------------------------------------------------------
+    # Internal — Proactive evolution (Purpose-driven)
+    # -----------------------------------------------------------------------
+
+    async def _proactive_evolution(self) -> None:
+        """Analyze the Purpose against the current codebase and evolve proactively.
+
+        Unlike reactive evolution (which responds to runtime anomalies), proactive
+        evolution reads the Purpose requirements, scans the codebase, and identifies
+        features or improvements that haven't been implemented yet.
+
+        This runs once per MAPE-K iteration. The LLM decides whether there is
+        meaningful work to do, and generates a prioritized evolution request.
+        """
+        async with self._evolution_semaphore:
+            logger.info("proactive.analyzing_purpose", purpose_version=self.purpose.version)
+
+            # Build a codebase summary by scanning the evolved (deployed) code
+            try:
+                scan_path = self.config.evolved_app_path
+                if not scan_path.exists():
+                    scan_path = self.config.managed_app_path
+                codebase_summary = await self._build_codebase_summary(scan_path)
+            except Exception as exc:
+                logger.warning("proactive.scan_error", error=str(exc))
+                return
+
+            # Ask the LLM to compare Purpose vs codebase
+            purpose_context = self.purpose.to_prompt_context()
+
+            analysis_prompt = f"""You are the proactive evolution analyzer for a self-evolving software system.
+
+Your job is to compare the system's Purpose (its specification of what it should be) against
+the current codebase, and identify the SINGLE most important gap — a feature, improvement,
+or requirement that is defined in the Purpose but NOT yet implemented in the code.
+
+{purpose_context}
+
+## Current Codebase Summary
+{codebase_summary}
+
+## Instructions
+1. Carefully compare each Purpose requirement against the codebase
+2. Identify requirements that are NOT yet implemented or are only partially implemented
+3. Pick the SINGLE most impactful gap to close next
+4. If ALL requirements appear to be implemented, respond with exactly: NO_EVOLUTION_NEEDED
+
+Respond in one of these formats:
+
+If evolution is needed:
+EVOLVE: <A clear, actionable description of what to build/implement to close the gap.
+Include which Purpose requirement it fulfills and what specific code changes are needed.>
+
+If no evolution is needed:
+NO_EVOLUTION_NEEDED
+"""
+
+            try:
+                response = await self.provider.generate(
+                    system_prompt="You are a senior software architect analyzing a self-evolving system.",
+                    user_prompt=analysis_prompt,
+                    max_tokens=2048,
+                )
+                analysis = response.strip()
+            except Exception as exc:
+                logger.warning("proactive.llm_error", error=str(exc))
+                return
+
+            if "NO_EVOLUTION_NEEDED" in analysis:
+                logger.info("proactive.all_requirements_met")
+                return
+
+            # Extract the evolution request
+            if analysis.startswith("EVOLVE:"):
+                request_text = analysis[len("EVOLVE:"):].strip()
+            else:
+                request_text = analysis
+
+            logger.info(
+                "proactive.evolution_needed",
+                request_preview=request_text[:150],
+            )
+
+            # Execute the evolution pipeline
+            ctx = await self.run(
+                user_request=f"[Proactive — Purpose-driven] {request_text}",
+                dry_run=False,
+                source=EvolutionSource.MONITOR,
+            )
+
+            logger.info(
+                "proactive.evolution_complete",
+                status=ctx.status.value,
+                request_id=ctx.request_id,
+            )
+
+    async def _build_codebase_summary(self, app_path: Path) -> str:
+        """Build a quick summary of the codebase for the proactive analyzer.
+
+        Scans key files (routes, models, components) to understand what's implemented.
+        """
+        summary_parts: list[str] = []
+
+        # Scan backend
+        backend_path = app_path / "backend" if (app_path / "backend").exists() else app_path
+        for subdir in ["app/api", "app/models", "app/schemas"]:
+            dir_path = backend_path / subdir
+            if dir_path.exists():
+                files = sorted(dir_path.rglob("*.py"))
+                for f in files[:20]:  # limit to avoid huge prompts
+                    try:
+                        content = f.read_text()[:2000]
+                        rel = f.relative_to(app_path)
+                        summary_parts.append(f"### {rel}\n```python\n{content}\n```")
+                    except Exception:
+                        pass
+
+        # Scan frontend
+        frontend_path = app_path / "frontend" if (app_path / "frontend").exists() else app_path
+        for subdir in ["src/components", "src/hooks", "src"]:
+            dir_path = frontend_path / subdir
+            if dir_path.exists():
+                files = sorted(dir_path.glob("*.tsx")) + sorted(dir_path.glob("*.ts"))
+                for f in files[:15]:
+                    try:
+                        content = f.read_text()[:2000]
+                        rel = f.relative_to(app_path)
+                        summary_parts.append(f"### {rel}\n```typescript\n{content}\n```")
+                    except Exception:
+                        pass
+
+        if not summary_parts:
+            return "(Could not scan codebase — no files found)"
+
+        return "\n\n".join(summary_parts[:30])  # cap at 30 files
+
+    # -----------------------------------------------------------------------
     # Internal — Inception processing
     # -----------------------------------------------------------------------
 
@@ -477,6 +640,17 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("purpose.load_error", error=str(exc))
             return None
+
+    async def _fetch_purpose_from_api(self) -> Purpose | None:
+        """Try to load Purpose from backend API (defined by admin via UI).
+
+        Falls back to local file if the API is not available.
+        """
+        purpose = await self.event_reporter.fetch_purpose()
+        if purpose:
+            return purpose
+        # Fallback to local file
+        return self._load_purpose()
 
     # -----------------------------------------------------------------------
     # Internal — state machine
