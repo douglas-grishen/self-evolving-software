@@ -110,6 +110,12 @@ async def _run_continuous(args: argparse.Namespace) -> int:
     print(f"  Monitor URL   : {settings.monitor_url}")
     print(f"  Interval      : {settings.monitor_interval_seconds}s")
     print(f"  Dry run       : {args.dry_run}")
+
+    if orchestrator.genesis:
+        print(f"  Genesis       : v{orchestrator.genesis.version}")
+    if orchestrator.purpose:
+        print(f"  Purpose       : v{orchestrator.purpose.version} — {orchestrator.purpose.identity.name}")
+
     print(f"  Press Ctrl+C to stop\n")
 
     await orchestrator.run_continuous()

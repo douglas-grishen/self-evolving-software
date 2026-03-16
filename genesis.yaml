@@ -1,0 +1,51 @@
+version: "1.0.0"
+created_at: "2026-03-16T00:00:00Z"
+description: >
+  Initial deployment of the self-evolving software system.
+  This Genesis snapshot captures the baseline state from which
+  all autonomous evolution begins.
+
+components:
+  managed_app:
+    frontend:
+      framework: react-19
+      build_tool: vite-6
+      language: typescript
+      entry: managed_app/frontend/src/main.tsx
+      background_image: managed_app/frontend/public/genesis-bg.jpg
+      ui_theme:
+        style: glassmorphism
+        background_attachment: fixed
+        card_opacity: 0.82
+        backdrop_blur: 16px
+    backend:
+      framework: fastapi
+      language: python
+      python_version: ">=3.11"
+      entry: managed_app/backend/app/main.py
+      database: postgresql-16
+      orm: sqlalchemy-2
+      migrations: alembic
+    docker_image_tag: genesis
+
+  evolving_engine:
+    entry: evolving_engine/engine/__main__.py
+    language: python
+    python_version: ">=3.11"
+    architecture: mape-k
+    agents:
+      - leader
+      - data_manager
+      - generator
+      - validator
+    docker_image_tag: genesis
+
+  infrastructure:
+    provider: aws
+    compute: ec2-t3-medium
+    pipeline: codepipeline
+    deploy: codedeploy
+    cdk_entry: infra/app.py
+
+initial_purpose_ref: purpose.yaml
+git_sha: ""  # Populated automatically at deploy time

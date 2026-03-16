@@ -31,11 +31,16 @@ from engine.agents.base import BaseAgent
 from engine.agents.data_manager import DataManagerAgent
 from engine.agents.generator import CodeGeneratorAgent
 from engine.agents.leader import LeaderAgent
+from engine.agents.purpose_evolver import PurposeEvolver
 from engine.agents.validator import CodeValidatorAgent
 from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext, create_context
 from engine.deployer.git_ops import LocalDeployer
+from engine.event_reporter import EventReporter
 from engine.models.evolution import DeploymentResult, EvolutionStatus, EvolutionSource
+from engine.models.genesis import Genesis
+from engine.models.inception import InceptionRequest
+from engine.models.purpose import Purpose
 from engine.monitor.models import Anomaly, AnomalyType, RuntimeSnapshot
 from engine.monitor.observer import RuntimeObserver
 from engine.providers.anthropic_provider import AnthropicProvider
@@ -79,8 +84,18 @@ class Orchestrator:
         # Sandbox
         self.sandbox = sandbox or DockerSandbox(self.config)
 
+        # Genesis — the immutable initial state of the system
+        self.genesis = self._load_genesis()
+
+        # Purpose — the guiding specification for all evolution decisions
+        self.purpose = self._load_purpose()
+
         # Agents (shared by both triggered and continuous modes)
-        self.leader = LeaderAgent(provider=self.provider, config=self.config)
+        self.leader = LeaderAgent(
+            provider=self.provider,
+            purpose=self.purpose,
+            config=self.config,
+        )
         self.data_manager = DataManagerAgent(config=self.config)
         self.generator = CodeGeneratorAgent(provider=self.provider, config=self.config)
         self.validator = CodeValidatorAgent(sandbox=self.sandbox, config=self.config)
@@ -94,6 +109,15 @@ class Orchestrator:
             error_rate_threshold=self.config.monitor_error_rate_threshold,
             latency_threshold_ms=self.config.monitor_latency_threshold_ms,
             db_latency_threshold_ms=self.config.monitor_db_latency_threshold_ms,
+        )
+
+        # Event reporter — fire-and-forget communication with backend API
+        self.event_reporter = EventReporter(self.config.monitor_url)
+
+        # Purpose evolver — processes Inceptions to modify the Purpose
+        self.purpose_evolver = PurposeEvolver(
+            provider=self.provider,
+            config=self.config,
         )
 
         # Semaphore — prevents concurrent evolution storms
@@ -140,7 +164,13 @@ class Orchestrator:
             dry_run=dry_run,
         )
 
+        # Report pipeline start to backend
+        await self.event_reporter.post_event(ctx)
+
         ctx = await self._run_state_machine(ctx)
+
+        # Report pipeline completion to backend
+        await self.event_reporter.post_event(ctx)
 
         logger.info(
             "pipeline.complete",
@@ -179,10 +209,18 @@ class Orchestrator:
             "continuous_loop.start",
             monitor_url=self.config.monitor_url,
             interval_seconds=interval,
+            genesis_version=self.genesis.version if self.genesis else None,
+            purpose_version=self.purpose.version if self.purpose else None,
         )
+
+        # Post initial purpose to backend so the UI can display it
+        if self.purpose:
+            await self.event_reporter.post_purpose(self.purpose)
 
         while self._running:
             try:
+                # Process pending Inceptions before monitoring
+                await self._process_pending_inceptions()
                 await self._mape_k_iteration()
             except asyncio.CancelledError:
                 logger.info("continuous_loop.cancelled")
@@ -344,6 +382,101 @@ class Orchestrator:
             logger.warning("anomaly.no_template", anomaly_type=anomaly.type.value)
 
         return request_text
+
+    # -----------------------------------------------------------------------
+    # Internal — Inception processing
+    # -----------------------------------------------------------------------
+
+    async def _process_pending_inceptions(self) -> None:
+        """Poll the backend for pending Inceptions and process them.
+
+        Inceptions modify the Purpose. Each pending inception is fed to the
+        PurposeEvolver, which uses the LLM to produce an updated Purpose.
+        This runs before each MAPE-K iteration so the monitoring loop
+        always uses the latest Purpose.
+        """
+        if not self.purpose:
+            return
+
+        inceptions = await self.event_reporter.poll_inceptions()
+        if not inceptions:
+            return
+
+        for inception in inceptions:
+            logger.info(
+                "inception.processing",
+                inception_id=inception.id,
+                directive=inception.directive[:100],
+            )
+
+            new_purpose, result = await self.purpose_evolver.evolve(
+                self.purpose, inception
+            )
+
+            accepted = new_purpose.version > self.purpose.version
+
+            # Report result back to backend
+            await self.event_reporter.report_inception_result(
+                inception.id, result, accepted=accepted
+            )
+
+            if accepted:
+                # Update in-memory purpose and propagate to Leader agent
+                self.purpose = new_purpose
+                self.leader.purpose = new_purpose
+
+                # Store new purpose version in backend DB
+                await self.event_reporter.post_purpose(new_purpose, inception_id=inception.id)
+
+                logger.info(
+                    "inception.applied",
+                    inception_id=inception.id,
+                    new_version=new_purpose.version,
+                )
+            else:
+                logger.info(
+                    "inception.rejected",
+                    inception_id=inception.id,
+                    reason=result.changes_summary[:200],
+                )
+
+    # -----------------------------------------------------------------------
+    # Internal — Genesis & Purpose loading
+    # -----------------------------------------------------------------------
+
+    def _load_genesis(self) -> Genesis | None:
+        """Load the Genesis snapshot from disk. Returns None if not found."""
+        try:
+            genesis = Genesis.load(self.config.genesis_path)
+            logger.info(
+                "genesis.loaded",
+                version=genesis.version,
+                created_at=genesis.created_at.isoformat(),
+            )
+            return genesis
+        except FileNotFoundError:
+            logger.warning("genesis.not_found", path=str(self.config.genesis_path))
+            return None
+        except Exception as exc:
+            logger.warning("genesis.load_error", error=str(exc))
+            return None
+
+    def _load_purpose(self) -> Purpose | None:
+        """Load the current Purpose from disk. Returns None if not found."""
+        try:
+            purpose = Purpose.load(self.config.purpose_path)
+            logger.info(
+                "purpose.loaded",
+                version=purpose.version,
+                identity=purpose.identity.name,
+            )
+            return purpose
+        except FileNotFoundError:
+            logger.warning("purpose.not_found", path=str(self.config.purpose_path))
+            return None
+        except Exception as exc:
+            logger.warning("purpose.load_error", error=str(exc))
+            return None
 
     # -----------------------------------------------------------------------
     # Internal — state machine

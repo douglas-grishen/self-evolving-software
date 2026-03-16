@@ -7,13 +7,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import v1_router
+from app.auth import ensure_default_admin
 from app.config import settings
+from app.database import async_session
 from app.middleware.metrics import MetricsMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle."""
+    # Seed default admin user on first startup
+    async with async_session() as session:
+        await ensure_default_admin(session)
     yield
 
 

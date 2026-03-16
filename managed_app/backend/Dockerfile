@@ -17,8 +17,11 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Make entrypoint executable
+RUN chmod +x entrypoint.sh
+
+# Run migrations then start uvicorn
+CMD ["./entrypoint.sh"]
 
 # ---------- Test stage (used by the evolving-engine sandbox) ----------
 FROM base AS test
