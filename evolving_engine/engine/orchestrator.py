@@ -25,6 +25,8 @@ SELF-MODIFICATION:
 """
 
 import asyncio
+from pathlib import Path
+
 import structlog
 
 from engine.agents.base import BaseAgent
