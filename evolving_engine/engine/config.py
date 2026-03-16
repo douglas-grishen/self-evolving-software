@@ -21,6 +21,15 @@ class EngineSettings(BaseSettings):
     # Root of the repository (used for full-repo scans and Git operations)
     repo_root: Path = Path("..")
 
+    # Genesis — immutable initial state snapshot
+    genesis_path: Path = Path("../genesis.yaml")
+
+    # Purpose — the guiding specification for evolution decisions
+    purpose_path: Path = Path("../purpose.yaml")
+
+    # Purpose history — archived versions after Inception modifications
+    purpose_history_path: Path = Path("../purpose_history")
+
     # Scratch space for staging generated files before validation
     workspace_path: Path = Path("/tmp/evolving_engine_workspace")
 

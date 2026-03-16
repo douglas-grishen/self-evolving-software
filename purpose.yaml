@@ -1,0 +1,51 @@
+version: 1
+updated_at: "2026-03-16T00:00:00Z"
+
+identity:
+  name: Self-Evolving Software System
+  description: >
+    An autonomous software system that monitors its own runtime behavior,
+    detects anomalies, and evolves its codebase to fix issues, add features,
+    and improve itself — all without human intervention.
+
+functional_requirements:
+  - Provide a web application with health monitoring and status dashboard
+  - Autonomously detect and fix runtime anomalies (high error rates, latency, crashes)
+  - Support user-triggered evolution requests via natural language
+  - Support Inceptions that modify the system's Purpose and evolution direction
+  - Display real-time evolution monitoring through a web UI
+  - Maintain an audit trail of all evolution cycles and their outcomes
+  - Archive Purpose history when Inceptions modify the evolution direction
+
+technical_requirements:
+  - "Frontend: React 19 + TypeScript with Vite build tooling"
+  - "Backend: FastAPI + SQLAlchemy 2 (async) with PostgreSQL 16"
+  - "Engine: Multi-agent MAPE-K architecture with Claude LLM"
+  - Docker-based deployment with three-network isolation (managed-system, control-plane, autonomic-manager)
+  - Alembic database migrations for all schema changes
+  - All generated code must pass sandbox validation (static analysis, build, integration tests)
+  - Structured logging via structlog for full observability
+
+security_requirements:
+  - No secrets in source code or version control
+  - CORS restricted to known origins only
+  - All database access through ORM (no raw SQL from user input)
+  - Engine communicates with backend only via control-plane network
+  - Sandbox validation required before any deployment
+  - Inceptions that would disable security constraints must be rejected
+
+constraints:
+  - Changes must pass three-stage sandbox validation before deployment
+  - Database migrations must be backwards-compatible
+  - Maximum risk_level of medium for autonomous (monitor-triggered) evolutions
+  - Engine must not modify infrastructure code (infra/) autonomously
+  - Frontend must remain functional during evolution cycles
+  - Single EC2 instance deployment (no horizontal scaling)
+
+evolution_directives:
+  - Prefer minimal, focused changes that solve the specific problem
+  - Always add tests for new functionality
+  - Maintain backwards compatibility with existing API endpoints
+  - Evaluate every evolution request against this Purpose before planning
+  - When in doubt, choose the safer, simpler approach
+  - Log all decisions and their reasoning for auditability

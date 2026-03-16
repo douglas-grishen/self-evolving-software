@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/managed_app"
 
+    # Auth / JWT
+    jwt_secret_key: str = "self-evolving-software-genesis-secret-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 480  # 8 hours
+
+    # Default admin (created at first startup)
+    default_admin_username: str = "douglas"
+    default_admin_password: str = "self-evolving.org"
+
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173"]
 
