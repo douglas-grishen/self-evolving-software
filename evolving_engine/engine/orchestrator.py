@@ -25,6 +25,7 @@ SELF-MODIFICATION:
 """
 
 import asyncio
+import time
 from pathlib import Path
 
 import structlog
@@ -55,6 +56,9 @@ logger = structlog.get_logger()
 
 # How many anomaly-driven evolutions can run concurrently (prevent storm)
 _MAX_CONCURRENT_EVOLUTIONS = 1
+
+# Proactive analysis runs at most once every 60 minutes (unless manually triggered)
+_PROACTIVE_INTERVAL_SECONDS = 60 * 60  # 60 minutes
 
 
 class Orchestrator:
@@ -128,6 +132,7 @@ class Orchestrator:
         # Runtime state for continuous mode
         self._running = False
         self._evolution_count = 0
+        self._last_proactive_run: float = 0.0  # epoch timestamp of last proactive analysis
 
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
@@ -248,8 +253,25 @@ class Orchestrator:
                 await self._mape_k_iteration()
 
                 # Proactive evolution (Purpose → build features)
+                # Runs every 60 minutes OR when manually triggered via UI
                 if self.purpose:
-                    await self._proactive_evolution()
+                    should_run_proactive = False
+                    elapsed = time.time() - self._last_proactive_run
+
+                    # Check if manually triggered via API
+                    triggered = await self.event_reporter.check_analysis_trigger()
+                    if triggered:
+                        logger.info("proactive.manual_trigger_detected")
+                        should_run_proactive = True
+                    elif elapsed >= _PROACTIVE_INTERVAL_SECONDS:
+                        logger.info(
+                            "proactive.interval_reached",
+                            minutes_elapsed=int(elapsed / 60),
+                        )
+                        should_run_proactive = True
+
+                    if should_run_proactive:
+                        await self._proactive_evolution()
 
             except asyncio.CancelledError:
                 logger.info("continuous_loop.cancelled")
@@ -423,10 +445,11 @@ class Orchestrator:
         evolution reads the Purpose requirements, scans the codebase, and identifies
         features or improvements that haven't been implemented yet.
 
-        This runs once per MAPE-K iteration. The LLM decides whether there is
-        meaningful work to do, and generates a prioritized evolution request.
+        Runs every 60 minutes or when manually triggered via the UI.
+        The LLM decides whether there is meaningful work to do.
         """
         async with self._evolution_semaphore:
+            self._last_proactive_run = time.time()
             logger.info("proactive.analyzing_purpose", purpose_version=self.purpose.version)
 
             # Build a codebase summary by scanning the evolved (deployed) code

@@ -1,4 +1,4 @@
-import { usePurpose } from "../../hooks/useEvolutionApi";
+import { usePurpose, useTriggerAnalysis } from "../../hooks/useEvolutionApi";
 
 interface PurposeData {
   version: number;
@@ -74,6 +74,7 @@ function RequirementsList({ title, items }: { title: string; items: string[] }) 
 
 export function PurposeViewer() {
   const { purpose, loading, error } = usePurpose();
+  const { trigger, triggering, triggered, error: triggerError } = useTriggerAnalysis();
 
   if (loading) return <div className="card">Loading purpose...</div>;
   if (error) return <div className="card error-text">Error: {error}</div>;
@@ -103,6 +104,18 @@ export function PurposeViewer() {
       ) : (
         <pre className="purpose-raw">{purpose.content_yaml}</pre>
       )}
+
+      <div className="purpose-actions">
+        <button
+          className="run-analysis-btn"
+          onClick={trigger}
+          disabled={triggering}
+        >
+          {triggering ? "Triggering..." : triggered ? "Analysis Triggered!" : "Run Analysis Now"}
+        </button>
+        {triggerError && <span className="error-text" style={{ fontSize: "0.85rem" }}>Error: {triggerError}</span>}
+        {triggered && <span className="success-text" style={{ fontSize: "0.85rem" }}>Engine will run proactive analysis on next cycle.</span>}
+      </div>
 
       <div className="purpose-meta">
         Created: {new Date(purpose.created_at).toLocaleString()}
