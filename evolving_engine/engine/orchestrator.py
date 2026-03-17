@@ -465,6 +465,9 @@ class Orchestrator:
             # Ask the LLM to compare Purpose vs codebase
             purpose_context = self.purpose.to_prompt_context()
 
+            # Fetch existing apps to understand what has already been planned/built
+            apps_summary = await self._fetch_apps_summary()
+
             analysis_prompt = f"""You are the proactive evolution analyzer for a self-evolving software system.
 
 Your job is to compare the system's Purpose (its specification of what it should be) against
@@ -476,15 +479,46 @@ or requirement that is defined in the Purpose but NOT yet implemented in the cod
 ## Current Codebase Summary
 {codebase_summary}
 
+## Existing Apps
+{apps_summary}
+
+## Architecture: Apps, Features & Capabilities
+
+The system uses a structured framework:
+- **App**: A cohesive unit with a concrete goal, displayed as a desktop icon. Users launch apps by clicking icons.
+- **Feature**: A user-facing behavior within an app (something a person can see/use).
+- **Capability**: An internal system ability that enables features or runs independently in the background.
+
+When you identify a gap that warrants a NEW app (a distinct user-facing experience), you should
+create the app with its features and capabilities using the CREATE_APP format below.
+
+When the gap is an improvement to existing code or infrastructure (not a new app), use EVOLVE.
+
 ## Instructions
-1. Carefully compare each Purpose requirement against the codebase
+1. Carefully compare each Purpose requirement against the codebase and existing apps
 2. Identify requirements that are NOT yet implemented or are only partially implemented
 3. Pick the SINGLE most impactful gap to close next
 4. If ALL requirements appear to be implemented, respond with exactly: NO_EVOLUTION_NEEDED
 
-Respond in one of these formats:
+## Response Format
 
-If evolution is needed:
+If a new App should be created:
+CREATE_APP:
+name: <App name>
+icon: <single emoji>
+goal: <concrete objective>
+features:
+  - name: <feature name>
+    description: <what the user experiences>
+  - name: <feature name>
+    description: <what the user experiences>
+capabilities:
+  - name: <capability name>
+    description: <internal system ability>
+    is_background: <true/false>
+evolution_request: <What code changes are needed to build the first feature of this app>
+
+If existing code needs improvement (not a new app):
 EVOLVE: <A clear, actionable description of what to build/implement to close the gap.
 Include which Purpose requirement it fulfills and what specific code changes are needed.>
 
@@ -505,6 +539,11 @@ NO_EVOLUTION_NEEDED
 
             if "NO_EVOLUTION_NEEDED" in analysis:
                 logger.info("proactive.all_requirements_met")
+                return
+
+            # Handle CREATE_APP response — register the app first, then evolve
+            if analysis.startswith("CREATE_APP:"):
+                await self._handle_create_app(analysis)
                 return
 
             # Extract the evolution request
@@ -530,6 +569,116 @@ NO_EVOLUTION_NEEDED
                 status=ctx.status.value,
                 request_id=ctx.request_id,
             )
+
+    async def _handle_create_app(self, analysis: str) -> None:
+        """Parse CREATE_APP response from LLM and register it via the backend API.
+
+        Then runs the evolution pipeline to build the app's first feature.
+        """
+        import yaml  # local import to avoid top-level dependency in this module
+
+        try:
+            # Extract YAML-like block after CREATE_APP:
+            yaml_text = analysis[len("CREATE_APP:"):].strip()
+
+            # Extract the evolution_request from the end (not valid YAML key)
+            evolution_request = ""
+            if "evolution_request:" in yaml_text:
+                parts = yaml_text.split("evolution_request:", 1)
+                yaml_text = parts[0]
+                evolution_request = parts[1].strip()
+
+            # Parse the YAML-like structure
+            app_data = yaml.safe_load(yaml_text) or {}
+
+            app_name = app_data.get("name", "Unnamed App")
+            app_icon = app_data.get("icon", "\U0001f4e6")
+            app_goal = app_data.get("goal", "")
+            features_raw = app_data.get("features", [])
+            capabilities_raw = app_data.get("capabilities", [])
+
+            logger.info(
+                "proactive.create_app",
+                name=app_name,
+                features=len(features_raw),
+                capabilities=len(capabilities_raw),
+            )
+
+            # Create capabilities first
+            cap_ids: list[str] = []
+            for cap_data in capabilities_raw:
+                cap_payload = {
+                    "name": cap_data.get("name", ""),
+                    "description": cap_data.get("description", ""),
+                    "is_background": cap_data.get("is_background", False),
+                }
+                cap_id = await self.event_reporter.create_capability(cap_payload)
+                if cap_id:
+                    cap_ids.append(cap_id)
+
+            # Build features list with capability links
+            features_payload = []
+            for feat_data in features_raw:
+                features_payload.append({
+                    "name": feat_data.get("name", ""),
+                    "description": feat_data.get("description", ""),
+                    "user_facing_description": feat_data.get("description", ""),
+                    "capability_ids": cap_ids,  # link all caps to all features for now
+                })
+
+            # Create the app
+            app_payload = {
+                "name": app_name,
+                "icon": app_icon,
+                "goal": app_goal,
+                "status": "building",
+                "features": features_payload,
+                "capability_ids": cap_ids,
+            }
+            app_id = await self.event_reporter.create_app(app_payload)
+
+            if app_id:
+                logger.info("proactive.app_created", app_id=app_id, name=app_name)
+            else:
+                logger.warning("proactive.app_create_failed", name=app_name)
+
+            # Now run the evolution to actually build the app
+            if evolution_request:
+                ctx = await self.run(
+                    user_request=f"[Proactive — App: {app_name}] {evolution_request}",
+                    dry_run=False,
+                    source=EvolutionSource.MONITOR,
+                )
+                logger.info(
+                    "proactive.app_evolution_complete",
+                    app_name=app_name,
+                    status=ctx.status.value,
+                    request_id=ctx.request_id,
+                )
+
+        except Exception as exc:
+            logger.warning("proactive.create_app_error", error=str(exc))
+
+    async def _fetch_apps_summary(self) -> str:
+        """Fetch the list of existing apps from the backend for the proactive analyzer."""
+        try:
+            apps = await self.event_reporter.fetch_apps()
+            if not apps:
+                return "(No apps created yet)"
+
+            lines = []
+            for app in apps:
+                feat_count = app.get("feature_count", 0)
+                cap_count = app.get("capability_count", 0)
+                lines.append(
+                    f"- {app.get('icon', '')} **{app.get('name', '?')}** "
+                    f"[{app.get('status', '?')}] — {app.get('goal', 'no goal')} "
+                    f"({feat_count} features, {cap_count} capabilities)"
+                )
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.debug("proactive.fetch_apps_error", error=str(exc))
+            return "(Could not fetch apps)"
 
     async def _build_codebase_summary(self, app_path: Path) -> str:
         """Build a quick summary of the codebase for the proactive analyzer.
