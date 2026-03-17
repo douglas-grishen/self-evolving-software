@@ -29,14 +29,25 @@ class AnthropicProvider(BaseLLMProvider):
             model=self.model,
             system_len=len(system_prompt),
             user_len=len(user_prompt),
+            max_tokens=max_tokens,
         )
 
-        message = await self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        # Use extended output beta for large token requests (>16K)
+        # Required for models like claude-sonnet-4-5 to output more than 16384 tokens
+        extra_headers = {}
+        if max_tokens > 16384:
+            extra_headers["anthropic-beta"] = "output-128k-2025-02-19"
+
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if extra_headers:
+            kwargs["extra_headers"] = extra_headers
+
+        message = await self.client.messages.create(**kwargs)
 
         # Extract text from the first content block
         text = ""
@@ -48,6 +59,7 @@ class AnthropicProvider(BaseLLMProvider):
             "anthropic.response",
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
+            stop_reason=message.stop_reason,
         )
 
         return text

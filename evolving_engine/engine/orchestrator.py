@@ -271,7 +271,10 @@ class Orchestrator:
                         should_run_proactive = True
 
                     if should_run_proactive:
-                        await self._proactive_evolution()
+                        success = await self._proactive_evolution()
+                        if not success:
+                            # Reset timer so we retry sooner (5 min) instead of waiting 60
+                            self._last_proactive_run = time.time() - _PROACTIVE_INTERVAL_SECONDS + 300
 
             except asyncio.CancelledError:
                 logger.info("continuous_loop.cancelled")
@@ -438,7 +441,7 @@ class Orchestrator:
     # Internal — Proactive evolution (Purpose-driven)
     # -----------------------------------------------------------------------
 
-    async def _proactive_evolution(self) -> None:
+    async def _proactive_evolution(self) -> bool:
         """Analyze the Purpose against the current codebase and evolve proactively.
 
         Unlike reactive evolution (which responds to runtime anomalies), proactive
@@ -447,6 +450,9 @@ class Orchestrator:
 
         Runs every 60 minutes or when manually triggered via the UI.
         The LLM decides whether there is meaningful work to do.
+
+        Returns True if the analysis completed (even if no evolution was needed),
+        False if there was an error.
         """
         async with self._evolution_semaphore:
             self._last_proactive_run = time.time()
@@ -460,7 +466,7 @@ class Orchestrator:
                 codebase_summary = await self._build_codebase_summary(scan_path)
             except Exception as exc:
                 logger.warning("proactive.scan_error", error=str(exc))
-                return
+                return False
 
             # Ask the LLM to compare Purpose vs codebase
             purpose_context = self.purpose.to_prompt_context()
@@ -535,16 +541,16 @@ NO_EVOLUTION_NEEDED
                 analysis = response.strip()
             except Exception as exc:
                 logger.warning("proactive.llm_error", error=str(exc))
-                return
+                return False
 
             if "NO_EVOLUTION_NEEDED" in analysis:
                 logger.info("proactive.all_requirements_met")
-                return
+                return True
 
             # Handle CREATE_APP response — register the app first, then evolve
             if analysis.startswith("CREATE_APP:"):
                 await self._handle_create_app(analysis)
-                return
+                return True
 
             # Extract the evolution request
             if analysis.startswith("EVOLVE:"):
@@ -569,6 +575,7 @@ NO_EVOLUTION_NEEDED
                 status=ctx.status.value,
                 request_id=ctx.request_id,
             )
+            return ctx.status == EvolutionStatus.COMPLETED
 
     async def _handle_create_app(self, analysis: str) -> None:
         """Parse CREATE_APP response from LLM and register it via the backend API.
