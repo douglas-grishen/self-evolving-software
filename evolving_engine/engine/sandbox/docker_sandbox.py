@@ -131,8 +131,9 @@ class DockerSandbox(BaseSandbox):
     async def _run_build_test(self, app_path: Path) -> tuple[bool, list[str]]:
         """Attempt to docker build each service.
 
-        For the backend, builds the ``test`` stage so that dev dependencies
-        (pytest, ruff, etc.) are included in the sandbox image.
+        For the backend, tries the ``test`` stage first (for pytest). If that
+        fails, falls back to ``base`` stage — the code still compiles and the
+        evolution should not be blocked just because dev deps fail to install.
         """
         errors: list[str] = []
 
@@ -143,18 +144,30 @@ class DockerSandbox(BaseSandbox):
 
             try:
                 tag = f"evo-sandbox-{service}:test"
-                # Use the 'test' stage for backend so pytest is available
                 build_kwargs: dict = dict(
                     path=str(app_path / service),
                     tag=tag,
                     rm=True,
                     timeout=self.config.sandbox_timeout_seconds,
                 )
+
+                # Try 'test' stage first for backend (includes pytest)
                 if service == "backend":
                     build_kwargs["target"] = "test"
 
-                self.client.images.build(**build_kwargs)
-                logger.info("build.success", service=service)
+                try:
+                    self.client.images.build(**build_kwargs)
+                    logger.info("build.success", service=service, target=build_kwargs.get("target"))
+                except docker.errors.BuildError:
+                    if service == "backend":
+                        # Fallback: try 'base' stage — code compiles even if dev deps fail
+                        logger.warning("build.test_stage_failed_fallback_to_base", service=service)
+                        build_kwargs["target"] = "base"
+                        self.client.images.build(**build_kwargs)
+                        logger.info("build.success", service=service, target="base")
+                    else:
+                        raise
+
             except docker.errors.BuildError as exc:
                 errors.append(f"Docker build failed for {service}: {exc}")
             except docker.errors.APIError as exc:
