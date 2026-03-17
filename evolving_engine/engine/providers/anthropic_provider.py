@@ -23,7 +23,10 @@ class AnthropicProvider(BaseLLMProvider):
         user_prompt: str,
         max_tokens: int = 4096,
     ) -> str:
-        """Call the Anthropic Messages API and return the text response."""
+        """Call the Anthropic Messages API and return the text response.
+
+        Uses streaming for large token requests (>16K) as required by the SDK.
+        """
         logger.debug(
             "anthropic.generate",
             model=self.model,
@@ -33,7 +36,6 @@ class AnthropicProvider(BaseLLMProvider):
         )
 
         # Use extended output beta for large token requests (>16K)
-        # Required for models like claude-sonnet-4-5 to output more than 16384 tokens
         extra_headers = {}
         if max_tokens > 16384:
             extra_headers["anthropic-beta"] = "output-128k-2025-02-19"
@@ -46,6 +48,11 @@ class AnthropicProvider(BaseLLMProvider):
         }
         if extra_headers:
             kwargs["extra_headers"] = extra_headers
+
+        # SDK requires streaming for requests that may take >10 minutes
+        # (typically when max_tokens > 16384). Use streaming for all large requests.
+        if max_tokens > 16384:
+            return await self._generate_streaming(**kwargs)
 
         message = await self.client.messages.create(**kwargs)
 
@@ -60,6 +67,41 @@ class AnthropicProvider(BaseLLMProvider):
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
             stop_reason=message.stop_reason,
+        )
+
+        return text
+
+    async def _generate_streaming(self, **kwargs) -> str:
+        """Stream a response from the Anthropic API, collecting all text.
+
+        Required for extended output (>16K tokens) to avoid SDK timeout errors.
+        """
+        text_parts: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        stop_reason = None
+
+        async with self.client.messages.stream(**kwargs) as stream:
+            async for event in stream:
+                if hasattr(event, "type"):
+                    if event.type == "content_block_delta" and hasattr(event, "delta"):
+                        if hasattr(event.delta, "text"):
+                            text_parts.append(event.delta.text)
+
+            # Get final message for usage stats
+            final_message = await stream.get_final_message()
+            input_tokens = final_message.usage.input_tokens
+            output_tokens = final_message.usage.output_tokens
+            stop_reason = final_message.stop_reason
+
+        text = "".join(text_parts)
+
+        logger.debug(
+            "anthropic.response",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            stop_reason=stop_reason,
+            streamed=True,
         )
 
         return text
