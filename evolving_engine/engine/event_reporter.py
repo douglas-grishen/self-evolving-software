@@ -187,6 +187,49 @@ class EventReporter:
         await self._post(f"{self._evolution_url}/purpose", payload)
 
     # ------------------------------------------------------------------
+    # Apps, Features & Capabilities
+    # ------------------------------------------------------------------
+
+    async def fetch_apps(self) -> list[dict]:
+        """Fetch the list of all apps from the backend."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self.base_url}/api/v1/apps")
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            logger.debug("event_reporter.fetch_apps_error", error=str(exc))
+            return []
+
+    async def create_app(self, payload: dict) -> str | None:
+        """Create a new app via the backend API. Returns the app ID."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(f"{self.base_url}/api/v1/apps", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            app_id = data.get("id")
+            logger.info("event_reporter.app_created", app_id=app_id, name=payload.get("name"))
+            return app_id
+        except Exception as exc:
+            logger.debug("event_reporter.create_app_error", error=str(exc))
+            return None
+
+    async def create_capability(self, payload: dict) -> str | None:
+        """Create a capability via the backend API. Returns the capability ID."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(f"{self.base_url}/api/v1/apps/capabilities", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            cap_id = data.get("id")
+            logger.info("event_reporter.capability_created", cap_id=cap_id, name=payload.get("name"))
+            return cap_id
+        except Exception as exc:
+            logger.debug("event_reporter.create_capability_error", error=str(exc))
+            return None
+
+    # ------------------------------------------------------------------
     # Internal HTTP helpers
     # ------------------------------------------------------------------
 
