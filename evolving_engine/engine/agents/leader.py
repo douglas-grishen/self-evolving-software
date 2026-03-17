@@ -47,6 +47,13 @@ You must produce a JSON evolution plan specifying:
 - risk_level: "low", "medium", or "high"
 - reasoning: your thought process (including how this aligns with the Purpose)
 
+IMPORTANT CONSTRAINTS:
+- Maximum 5 files per evolution plan. Focus on the most critical changes.
+- If a feature requires more than 5 files, break it down: plan only the foundational
+  files first. The next evolution cycle will handle the rest.
+- Prefer small, incremental changes that can be validated independently.
+- Each file change should be self-contained and not break existing functionality.
+
 Be precise. Every file that needs to change must be listed. Think step by step."""
 
 
@@ -84,11 +91,12 @@ class LeaderAgent(BaseAgent):
             f"{repo_context}"
         )
 
-        # Call LLM for structured plan generation
+        # Call LLM for structured plan generation (use fast model — planning doesn't need Sonnet)
         plan = await self.provider.generate_structured(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             response_model=EvolutionPlan,
+            model_override="fast",
         )
 
         self.logger.info(

@@ -25,6 +25,7 @@ SELF-MODIFICATION:
 """
 
 import asyncio
+import hashlib
 import time
 from pathlib import Path
 
@@ -133,6 +134,10 @@ class Orchestrator:
         self._running = False
         self._evolution_count = 0
         self._last_proactive_run: float = 0.0  # epoch timestamp of last proactive analysis
+
+        # Proactive analysis cache — skip LLM call if Purpose + codebase unchanged
+        self._last_analysis_hash: str = ""
+        self._last_analysis_result: str = ""
 
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
@@ -444,12 +449,10 @@ class Orchestrator:
     async def _proactive_evolution(self) -> bool:
         """Analyze the Purpose against the current codebase and evolve proactively.
 
-        Unlike reactive evolution (which responds to runtime anomalies), proactive
-        evolution reads the Purpose requirements, scans the codebase, and identifies
-        features or improvements that haven't been implemented yet.
-
-        Runs every 60 minutes or when manually triggered via the UI.
-        The LLM decides whether there is meaningful work to do.
+        Optimizations applied:
+        1. Uses Haiku (fast model) for gap analysis — 15x cheaper than Sonnet
+        2. Limits scope to 3-5 files per cycle for higher quality
+        3. Caches analysis — skips LLM call if Purpose + codebase haven't changed
 
         Returns True if the analysis completed (even if no evolution was needed),
         False if there was an error.
@@ -468,11 +471,36 @@ class Orchestrator:
                 logger.warning("proactive.scan_error", error=str(exc))
                 return False
 
-            # Ask the LLM to compare Purpose vs codebase
-            purpose_context = self.purpose.to_prompt_context()
-
             # Fetch existing apps to understand what has already been planned/built
             apps_summary = await self._fetch_apps_summary()
+
+            # ── OPTIMIZATION #3: Cache — skip LLM if nothing changed ──────────
+            purpose_yaml = self.purpose.to_yaml_string()
+            cache_input = f"{purpose_yaml}\n---\n{codebase_summary}\n---\n{apps_summary}"
+            current_hash = hashlib.sha256(cache_input.encode()).hexdigest()[:16]
+
+            if current_hash == self._last_analysis_hash and self._last_analysis_result:
+                # Nothing changed since last analysis. If last result was
+                # NO_EVOLUTION_NEEDED, skip entirely. Otherwise re-execute
+                # the cached evolution request (it may have failed last time).
+                if "NO_EVOLUTION_NEEDED" in self._last_analysis_result:
+                    logger.info(
+                        "proactive.cache_hit_skip",
+                        hash=current_hash,
+                        msg="Purpose and codebase unchanged, no evolution needed",
+                    )
+                    return True
+                else:
+                    logger.info(
+                        "proactive.cache_hit_retry",
+                        hash=current_hash,
+                        msg="Re-executing cached analysis (may have failed previously)",
+                    )
+                    analysis = self._last_analysis_result
+                    return await self._execute_proactive_analysis(analysis)
+
+            # ── OPTIMIZATION #1: Use Haiku for gap analysis ───────────────────
+            purpose_context = self.purpose.to_prompt_context()
 
             analysis_prompt = f"""You are the proactive evolution analyzer for a self-evolving software system.
 
@@ -500,6 +528,12 @@ create the app with its features and capabilities using the CREATE_APP format be
 
 When the gap is an improvement to existing code or infrastructure (not a new app), use EVOLVE.
 
+## IMPORTANT CONSTRAINTS
+- Focus on ONE small, incremental change (max 3-5 files)
+- Do NOT try to build an entire app in one shot — start with the smallest viable piece
+- Prefer backend-first changes (API endpoints, models) over full-stack features
+- Each evolution_request should be achievable in a single code generation pass
+
 ## Instructions
 1. Carefully compare each Purpose requirement against the codebase and existing apps
 2. Identify requirements that are NOT yet implemented or are only partially implemented
@@ -516,66 +550,80 @@ goal: <concrete objective>
 features:
   - name: <feature name>
     description: <what the user experiences>
-  - name: <feature name>
-    description: <what the user experiences>
 capabilities:
   - name: <capability name>
     description: <internal system ability>
     is_background: <true/false>
-evolution_request: <What code changes are needed to build the first feature of this app>
+evolution_request: <Describe ONLY the first 3-5 files needed to start this app. Be specific about file paths and what each file should contain. Do NOT describe the entire app — just the foundation.>
 
 If existing code needs improvement (not a new app):
 EVOLVE: <A clear, actionable description of what to build/implement to close the gap.
-Include which Purpose requirement it fulfills and what specific code changes are needed.>
+Include which Purpose requirement it fulfills and what specific code changes are needed.
+Limit to max 3-5 files.>
 
 If no evolution is needed:
 NO_EVOLUTION_NEEDED
 """
 
             try:
+                # Use fast model (Haiku) for analysis — 15x cheaper
                 response = await self.provider.generate(
                     system_prompt="You are a senior software architect analyzing a self-evolving system.",
                     user_prompt=analysis_prompt,
                     max_tokens=2048,
+                    model_override="fast",
                 )
                 analysis = response.strip()
             except Exception as exc:
                 logger.warning("proactive.llm_error", error=str(exc))
                 return False
 
-            if "NO_EVOLUTION_NEEDED" in analysis:
-                logger.info("proactive.all_requirements_met")
-                return True
+            # Cache the result
+            self._last_analysis_hash = current_hash
+            self._last_analysis_result = analysis
 
-            # Handle CREATE_APP response — register the app first, then evolve
-            if analysis.startswith("CREATE_APP:"):
-                await self._handle_create_app(analysis)
-                return True
+            return await self._execute_proactive_analysis(analysis)
 
-            # Extract the evolution request
-            if analysis.startswith("EVOLVE:"):
-                request_text = analysis[len("EVOLVE:"):].strip()
-            else:
-                request_text = analysis
+    async def _execute_proactive_analysis(self, analysis: str) -> bool:
+        """Execute the result of a proactive analysis (either fresh or cached)."""
+        if "NO_EVOLUTION_NEEDED" in analysis:
+            logger.info("proactive.all_requirements_met")
+            return True
 
-            logger.info(
-                "proactive.evolution_needed",
-                request_preview=request_text[:150],
-            )
+        # Handle CREATE_APP response — register the app first, then evolve
+        if analysis.startswith("CREATE_APP:"):
+            await self._handle_create_app(analysis)
+            return True
 
-            # Execute the evolution pipeline
-            ctx = await self.run(
-                user_request=f"[Proactive — Purpose-driven] {request_text}",
-                dry_run=False,
-                source=EvolutionSource.MONITOR,
-            )
+        # Extract the evolution request
+        if analysis.startswith("EVOLVE:"):
+            request_text = analysis[len("EVOLVE:"):].strip()
+        else:
+            request_text = analysis
 
-            logger.info(
-                "proactive.evolution_complete",
-                status=ctx.status.value,
-                request_id=ctx.request_id,
-            )
-            return ctx.status == EvolutionStatus.COMPLETED
+        logger.info(
+            "proactive.evolution_needed",
+            request_preview=request_text[:150],
+        )
+
+        # Execute the evolution pipeline (Generator still uses Sonnet)
+        ctx = await self.run(
+            user_request=f"[Proactive — Purpose-driven] {request_text}",
+            dry_run=False,
+            source=EvolutionSource.MONITOR,
+        )
+
+        # Clear cache on successful evolution (codebase changed)
+        if ctx.status == EvolutionStatus.COMPLETED:
+            self._last_analysis_hash = ""
+            self._last_analysis_result = ""
+
+        logger.info(
+            "proactive.evolution_complete",
+            status=ctx.status.value,
+            request_id=ctx.request_id,
+        )
+        return ctx.status == EvolutionStatus.COMPLETED
 
     async def _handle_create_app(self, analysis: str) -> None:
         """Parse CREATE_APP response from LLM and register it via the backend API.

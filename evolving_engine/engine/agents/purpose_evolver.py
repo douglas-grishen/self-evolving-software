@@ -85,9 +85,11 @@ class PurposeEvolver:
             f"## Rationale\n{inception.rationale or 'No rationale provided.'}"
         )
 
+        # Use fast model — purpose evolution is reasoning, not code generation
         response = await self.provider.generate(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
+            model_override="fast",
         )
 
         # Parse the LLM response to extract the updated purpose

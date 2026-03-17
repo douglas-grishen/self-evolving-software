@@ -1,4 +1,11 @@
-"""Anthropic Claude LLM provider — direct API integration."""
+"""Anthropic Claude LLM provider — direct API integration.
+
+Supports two model tiers:
+- self.model (default): High-capability model for code generation (Sonnet)
+- self.model_fast: Fast/cheap model for analysis and planning (Haiku)
+
+Callers can pass model_override to generate() to use the fast model.
+"""
 
 import anthropic
 import structlog
@@ -16,20 +23,34 @@ class AnthropicProvider(BaseLLMProvider):
         cfg = config or settings
         self.client = anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key)
         self.model = cfg.anthropic_model
+        self.model_fast = cfg.anthropic_model_fast
 
     async def generate(
         self,
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 4096,
+        model_override: str | None = None,
     ) -> str:
         """Call the Anthropic Messages API and return the text response.
 
+        Args:
+            model_override: If set, use this model instead of the default.
+                            Pass "fast" to use the fast/cheap model (Haiku).
+
         Uses streaming for large token requests (>16K) as required by the SDK.
         """
+        # Resolve model
+        if model_override == "fast":
+            model = self.model_fast
+        elif model_override:
+            model = model_override
+        else:
+            model = self.model
+
         logger.debug(
             "anthropic.generate",
-            model=self.model,
+            model=model,
             system_len=len(system_prompt),
             user_len=len(user_prompt),
             max_tokens=max_tokens,
@@ -41,7 +62,7 @@ class AnthropicProvider(BaseLLMProvider):
             extra_headers["anthropic-beta"] = "output-128k-2025-02-19"
 
         kwargs: dict = {
-            "model": self.model,
+            "model": model,
             "max_tokens": max_tokens,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],
@@ -64,6 +85,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         logger.debug(
             "anthropic.response",
+            model=model,
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
             stop_reason=message.stop_reason,
@@ -98,6 +120,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         logger.debug(
             "anthropic.response",
+            model=kwargs.get("model", "?"),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             stop_reason=stop_reason,

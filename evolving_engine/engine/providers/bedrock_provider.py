@@ -24,6 +24,7 @@ class BedrockProvider(BaseLLMProvider):
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 4096,
+        model_override: str | None = None,
     ) -> str:
         """Call Amazon Bedrock Converse API and return the text response.
 

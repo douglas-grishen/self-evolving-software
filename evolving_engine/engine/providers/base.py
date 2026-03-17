@@ -82,8 +82,14 @@ class BaseLLMProvider(ABC):
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 4096,
+        model_override: str | None = None,
     ) -> str:
-        """Generate a free-form text response."""
+        """Generate a free-form text response.
+
+        Args:
+            model_override: If set, use this model instead of the default.
+                            Pass "fast" to use a cheaper model for analysis/planning.
+        """
 
     async def generate_structured(
         self,
@@ -92,6 +98,7 @@ class BaseLLMProvider(ABC):
         response_model: type[T],
         max_tokens: int = 4096,
         retries: int = 2,
+        model_override: str | None = None,
     ) -> T:
         """Generate a response and parse it into a Pydantic model.
 
@@ -108,7 +115,7 @@ class BaseLLMProvider(ABC):
 
         last_error = None
         for attempt in range(1 + retries):
-            raw = await self.generate(augmented_system, user_prompt, max_tokens)
+            raw = await self.generate(augmented_system, user_prompt, max_tokens, model_override=model_override)
 
             # Strip markdown code fences if present
             cleaned = raw.strip()
