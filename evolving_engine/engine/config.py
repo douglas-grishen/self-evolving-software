@@ -56,7 +56,8 @@ class EngineSettings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-20250514"
     # Fast model for analysis/planning — cheaper, good enough for reasoning
-    anthropic_model_fast: str = "claude-haiku-4-5-20250514"
+    # Falls back to main model if not available on the API key
+    anthropic_model_fast: str = "claude-sonnet-4-20250514"
     bedrock_region: str = "us-east-1"
     bedrock_model_id: str = "anthropic.claude-sonnet-4-20250514-v1:0"
 

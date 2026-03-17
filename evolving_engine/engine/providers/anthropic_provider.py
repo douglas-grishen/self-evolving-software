@@ -40,13 +40,17 @@ class AnthropicProvider(BaseLLMProvider):
 
         Uses streaming for large token requests (>16K) as required by the SDK.
         """
-        # Resolve model
+        # Resolve model — "fast" maps to cheaper model for analysis/planning
         if model_override == "fast":
             model = self.model_fast
         elif model_override:
             model = model_override
         else:
             model = self.model
+
+        # If fast model is the same as main model, reduce max_tokens for cost savings
+        if model_override == "fast" and model == self.model:
+            max_tokens = min(max_tokens, 2048)
 
         logger.debug(
             "anthropic.generate",
