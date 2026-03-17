@@ -41,6 +41,9 @@ from app.schemas.evolution import (
 
 router = APIRouter(prefix="/evolution", tags=["evolution"])
 
+# In-memory flag for on-demand analysis trigger (cleared after engine polls it)
+_analysis_trigger_flag = False
+
 
 # ---------------------------------------------------------------------------
 # Evolution Events
@@ -298,3 +301,35 @@ async def dashboard_status(
         pending_inceptions=pending_count,
         last_evolution=EvolutionEventResponse.model_validate(last_record) if last_record else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Analysis Trigger (on-demand proactive analysis)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/trigger-analysis", status_code=202)
+async def trigger_analysis(
+    _admin: AdminUser = Depends(get_current_admin),
+) -> dict:
+    """Admin triggers an immediate proactive analysis cycle.
+
+    Sets a flag that the engine polls. The engine will run the analysis
+    on its next iteration regardless of the 60-minute throttle.
+    """
+    global _analysis_trigger_flag
+    _analysis_trigger_flag = True
+    return {"triggered": True, "message": "Proactive analysis will run on next engine poll."}
+
+
+@router.get("/trigger-analysis")
+async def check_analysis_trigger() -> dict:
+    """Engine polls this to check if an on-demand analysis was requested.
+
+    The flag is cleared after being read (consume-once semantics).
+    """
+    global _analysis_trigger_flag
+    triggered = _analysis_trigger_flag
+    if triggered:
+        _analysis_trigger_flag = False
+    return {"triggered": triggered}

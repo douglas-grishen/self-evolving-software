@@ -1140,3 +1140,185 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ===========================================================================
+   Run Analysis Button (inside Purpose Viewer)
+   =========================================================================== */
+
+.purpose-actions {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.run-analysis-btn {
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #ffffff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.run-analysis-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.45);
+}
+
+.run-analysis-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.success-text {
+  color: #22c55e;
+}
+
+/* ===========================================================================
+   Enhanced Timeline Cards
+   =========================================================================== */
+
+.timeline-proactive {
+  border-left: 3px solid rgba(99, 102, 241, 0.5);
+}
+
+.timeline-plan-summary {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 6px 0;
+  font-size: 0.8rem;
+  color: #c4b5fd;
+  line-height: 1.5;
+}
+
+.plan-label {
+  font-weight: 600;
+  color: #a78bfa;
+  margin-right: 4px;
+}
+
+.timeline-duration {
+  font-size: 0.68rem;
+  color: #666;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-count {
+  font-size: 0.72rem;
+  color: #666;
+}
+
+.detail-full-request {
+  flex-direction: column;
+}
+
+.detail-pre {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #bbb;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 10px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.error-pre {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.1);
+}
+
+/* Execution Steps (inside expanded timeline card) */
+
+.execution-steps {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.execution-steps .detail-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.step-row.step-ok {
+  border-left: 2px solid #22c55e;
+}
+
+.step-row.step-fail {
+  border-left: 2px solid #ef4444;
+}
+
+.step-row.step-info {
+  border-left: 2px solid #3b82f6;
+}
+
+.step-time {
+  font-family: "SF Mono", ui-monospace, monospace;
+  color: #666;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.step-agent {
+  color: #a78bfa;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.step-action {
+  color: #999;
+}
+
+.step-details {
+  color: #777;
+  font-size: 0.7rem;
+  margin-left: auto;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

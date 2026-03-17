@@ -192,3 +192,36 @@ export function useSubmitInception() {
 
   return { submit, submitting, error };
 }
+
+export function useTriggerAnalysis() {
+  const [triggering, setTriggering] = useState(false);
+  const [triggered, setTriggered] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const trigger = useCallback(async () => {
+    setTriggering(true);
+    setError(null);
+    setTriggered(false);
+    try {
+      const token = getAuthToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch("/api/v1/evolution/trigger-analysis", {
+        method: "POST",
+        headers,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTriggered(true);
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    } finally {
+      setTriggering(false);
+    }
+  }, []);
+
+  return { trigger, triggering, triggered, error };
+}

@@ -162,6 +162,21 @@ class EventReporter:
             logger.debug("event_reporter.fetch_purpose_error", error=str(exc))
             return None
 
+    async def check_analysis_trigger(self) -> bool:
+        """Check if an on-demand proactive analysis was triggered via the UI.
+
+        Returns True if triggered (consumes the flag on the backend side).
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self._evolution_url}/trigger-analysis")
+                resp.raise_for_status()
+                data = resp.json()
+            return data.get("triggered", False)
+        except Exception as exc:
+            logger.debug("event_reporter.check_trigger_error", error=str(exc))
+            return False
+
     async def post_purpose(self, purpose: Purpose, inception_id: str | None = None) -> None:
         """Store a purpose version in the backend DB."""
         payload = {
