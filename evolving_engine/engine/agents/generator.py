@@ -76,6 +76,8 @@ v1_router.include_router(<name>_router)
 ⛔ `backend/app/api/deps.py` — auth deps live in `app/auth.py`, not here.
 ⛔ `backend/app/api/v1/__init__.py` — do NOT modify the router registry file; the framework
    manages router registration.
+⛔ `backend/app/models/__init__.py` — do NOT modify the models package init; the framework
+   manages which models are loaded.
 
 Respond with a JSON array of file objects."""
 
@@ -151,7 +153,8 @@ class CodeGeneratorAgent(BaseAgent):
         )
         FORBIDDEN_EXACT = {
             "backend/app/api/deps.py",
-            "backend/app/api/v1/__init__.py",
+            "backend/app/api/v1/__init__.py",  # framework manages router registration
+            "backend/app/models/__init__.py",  # framework manages model registration
         }
 
         allowed_files = []
