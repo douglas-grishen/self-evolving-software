@@ -32,6 +32,19 @@ body {
   overflow: hidden;
 }
 
+/* Subtle deploy version badge — bottom-right corner of the desktop */
+.desktop-version {
+  position: absolute;
+  bottom: 10px;
+  right: 14px;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  color: rgba(255, 255, 255, 0.25);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ===========================================================================
    Desktop Icons (macOS-style app grid)
    =========================================================================== */

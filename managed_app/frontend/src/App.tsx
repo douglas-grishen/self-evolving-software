@@ -11,6 +11,7 @@ import { PurposeViewer } from "./components/evolution/PurposeViewer";
 import { useAuth } from "./hooks/useAuth";
 import { useApps } from "./hooks/useAppsApi";
 import { useEvolutionStatus } from "./hooks/useEvolutionApi";
+import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
 type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "health";
@@ -38,6 +39,7 @@ function App() {
   const auth = useAuth();
   const { status, refresh: refreshStatus } = useEvolutionStatus();
   const { apps } = useApps();
+  const { deploy_version } = useSystemInfo();
   const [activeWindow, setActiveWindow] = useState<WindowId | null>(null);
   const [purposeDismissed, setPurposeDismissed] = useState(false);
 
@@ -117,6 +119,14 @@ function App() {
             ))}
           </div>
         )}
+
+        {/* Subtle deploy version — bottom-right corner */}
+        <span
+          className="desktop-version"
+          title={`Autonomous deploy #${deploy_version}`}
+        >
+          v.{deploy_version}
+        </span>
       </div>
 
       {/* Welcome wizard — shown automatically when no Purpose is defined */}

@@ -16,6 +16,7 @@ Instance-specific evolved code lives exclusively on the EC2 instance.
 """
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 
@@ -82,6 +83,11 @@ class LocalDeployer:
                 shutil.copy2(src, dst)
                 logger.debug("deploy.file_copied", path=gen_file.file_path)
                 files_copied += 1
+
+        # Increment the deploy version baked into the image.
+        # This counter is exposed by GET /api/v1/system/info and shown on the desktop.
+        new_version = self._increment_deploy_version(evolved_path)
+        logger.info("deploy.version_bumped", version=new_version)
 
         # Git commit (local only)
         commit_sha = self._commit(repo, context)
@@ -187,6 +193,36 @@ class LocalDeployer:
         except Exception as exc:
             logger.error("deploy.rollback_error", error=str(exc))
             return False
+
+    def _increment_deploy_version(self, evolved_path: Path) -> int:
+        """Bump the deploy version counter baked into backend/app/_deploy_version.py.
+
+        The file is written before the git commit so the new version number
+        gets baked into the Docker image on rebuild.  The frontend reads it
+        via GET /api/v1/system/info and shows it as a subtle badge.
+        """
+        version_file = evolved_path / "backend" / "app" / "_deploy_version.py"
+        current = 0
+
+        if version_file.exists():
+            try:
+                content = version_file.read_text()
+                m = re.search(r"DEPLOY_VERSION\s*=\s*(\d+)", content)
+                if m:
+                    current = int(m.group(1))
+            except Exception:
+                pass
+
+        new_version = current + 1
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(
+            '"""Auto-generated deploy version — updated by the Self-Evolving Engine on each deploy.\n\n'
+            "Do NOT edit manually. The engine increments this counter after every successful\n"
+            "code deployment so the UI can display how many autonomous evolutions have run.\n"
+            '"""\n\n'
+            f"DEPLOY_VERSION: int = {new_version}\n"
+        )
+        return new_version
 
     async def _rebuild_services(self) -> tuple[bool, str]:
         """Rebuild and restart managed system Docker services.

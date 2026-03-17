@@ -259,6 +259,7 @@ class Orchestrator:
 
                 # Proactive evolution (Purpose → build features)
                 # Runs every 60 minutes OR when manually triggered via UI
+                # OR immediately on first cycle when no apps exist yet
                 if self.purpose:
                     should_run_proactive = False
                     elapsed = time.time() - self._last_proactive_run
@@ -274,6 +275,14 @@ class Orchestrator:
                             minutes_elapsed=int(elapsed / 60),
                         )
                         should_run_proactive = True
+                    elif elapsed >= 60:
+                        # Bootstrap shortcut: if no apps exist yet and it's been at
+                        # least 1 minute since last run, trigger immediately so the
+                        # desktop populates without waiting a full hour.
+                        apps = await self.event_reporter.fetch_apps()
+                        if not apps:
+                            logger.info("proactive.no_apps_bootstrap_trigger")
+                            should_run_proactive = True
 
                     if should_run_proactive:
                         success = await self._proactive_evolution()
