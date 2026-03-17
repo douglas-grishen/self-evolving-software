@@ -257,6 +257,17 @@ class Orchestrator:
                 # Reactive monitoring (anomalies → fix bugs)
                 await self._mape_k_iteration()
 
+                # Hot-reload proactive interval from settings API
+                try:
+                    interval_str = await self.event_reporter.get_setting("proactive_interval_minutes")
+                    if interval_str:
+                        interval_minutes = int(interval_str)
+                        proactive_interval = max(300, interval_minutes * 60)  # min 5 min
+                    else:
+                        proactive_interval = _PROACTIVE_INTERVAL_SECONDS
+                except Exception:
+                    proactive_interval = _PROACTIVE_INTERVAL_SECONDS
+
                 # Proactive evolution (Purpose → build features)
                 # Runs every 60 minutes OR when manually triggered via UI
                 # OR immediately on first cycle when no apps exist yet
@@ -269,7 +280,7 @@ class Orchestrator:
                     if triggered:
                         logger.info("proactive.manual_trigger_detected")
                         should_run_proactive = True
-                    elif elapsed >= _PROACTIVE_INTERVAL_SECONDS:
+                    elif elapsed >= proactive_interval:
                         logger.info(
                             "proactive.interval_reached",
                             minutes_elapsed=int(elapsed / 60),

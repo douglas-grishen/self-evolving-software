@@ -227,6 +227,19 @@ class EventReporter:
             logger.debug("event_reporter.update_app_error", error=str(exc))
             return False
 
+    async def get_setting(self, key: str) -> str | None:
+        """Fetch a single system setting value from the backend API."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self.base_url}/api/v1/settings/{key}")
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                return resp.json().get("value")
+        except Exception as exc:
+            logger.debug("event_reporter.get_setting_error", key=key, error=str(exc))
+            return None
+
     async def create_capability(self, payload: dict) -> str | None:
         """Create a capability via the backend API. Returns the capability ID."""
         try:

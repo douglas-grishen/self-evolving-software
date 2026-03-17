@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { AppWindow } from "./components/AppWindow";
 import { AppViewer } from "./components/AppViewer";
+import { ArchitectureView } from "./components/ArchitectureView";
 import { DesktopIcon } from "./components/DesktopIcon";
 import { HealthCheck } from "./components/HealthCheck";
 import { LoginScreen } from "./components/LoginScreen";
+import { SettingsView } from "./components/SettingsView";
 import { WelcomePurpose } from "./components/WelcomePurpose";
 import { EvolutionTimeline } from "./components/evolution/EvolutionTimeline";
 import { InceptionPanel } from "./components/evolution/InceptionPanel";
@@ -14,7 +16,7 @@ import { useEvolutionStatus } from "./hooks/useEvolutionApi";
 import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
-type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "health";
+type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings";
 type WindowId = SystemWindowId | `app:${string}`;
 
 function ToolbarStatus() {
@@ -88,8 +90,14 @@ function App() {
           <button className="menubar-item" onClick={() => toggle("purpose")}>
             Purpose
           </button>
+          <button className="menubar-item" onClick={() => toggle("architecture")}>
+            Architecture
+          </button>
           <button className="menubar-item" onClick={() => toggle("health")}>
             Health
+          </button>
+          <button className="menubar-item" onClick={() => toggle("settings")}>
+            Settings
           </button>
           <button
             className="menubar-item"
@@ -164,9 +172,21 @@ function App() {
         </AppWindow>
       )}
 
+      {activeWindow === "architecture" && (
+        <AppWindow title="System Architecture" onClose={close} width="760px" height="580px">
+          <ArchitectureView />
+        </AppWindow>
+      )}
+
       {activeWindow === "health" && (
         <AppWindow title="System Health" onClose={close} width="480px" height="280px">
           <HealthCheck />
+        </AppWindow>
+      )}
+
+      {activeWindow === "settings" && (
+        <AppWindow title="Settings" onClose={close} width="520px" height="440px">
+          <SettingsView />
         </AppWindow>
       )}
 
