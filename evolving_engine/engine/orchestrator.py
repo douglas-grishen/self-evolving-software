@@ -632,6 +632,33 @@ NO_EVOLUTION_NEEDED
             request_preview=request_text[:150],
         )
 
+        # Bootstrap guard: if no apps exist yet, auto-create a stub app from
+        # the Purpose before running EVOLVE. This handles the case where the
+        # LLM ignores the CRITICAL RULE and returns EVOLVE instead of CREATE_APP.
+        app_id: str | None = None
+        app_name: str = ""
+        existing_apps = await self.event_reporter.fetch_apps()
+        if not existing_apps and self.purpose:
+            try:
+                app_name = self.purpose.identity.name.title()
+                app_goal = self.purpose.identity.description
+                app_payload = {
+                    "name": app_name,
+                    "icon": "🔍",
+                    "goal": app_goal,
+                    "status": "building",
+                    "features": [],
+                    "capability_ids": [],
+                }
+                app_id = await self.event_reporter.create_app(app_payload)
+                if app_id:
+                    logger.info("proactive.auto_bootstrapped_app", app_id=app_id, name=app_name)
+                    # Clear cache so next cycle sees the new app
+                    self._last_analysis_hash = ""
+                    self._last_analysis_result = ""
+            except Exception as exc:
+                logger.warning("proactive.auto_bootstrap_error", error=str(exc))
+
         # Execute the evolution pipeline (Generator still uses Sonnet)
         ctx = await self.run(
             user_request=f"[Proactive — Purpose-driven] {request_text}",
@@ -643,6 +670,10 @@ NO_EVOLUTION_NEEDED
         if ctx.status == EvolutionStatus.COMPLETED:
             self._last_analysis_hash = ""
             self._last_analysis_result = ""
+            # Mark auto-bootstrapped app as active
+            if app_id:
+                await self.event_reporter.update_app(app_id, {"status": "active"})
+                logger.info("proactive.app_activated", app_id=app_id, name=app_name)
 
         logger.info(
             "proactive.evolution_complete",
