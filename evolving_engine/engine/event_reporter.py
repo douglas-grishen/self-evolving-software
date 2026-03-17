@@ -215,6 +215,18 @@ class EventReporter:
             logger.debug("event_reporter.create_app_error", error=str(exc))
             return None
 
+    async def update_app(self, app_id: str, payload: dict) -> bool:
+        """Update an app's status or metadata via the backend API."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.put(f"{self.base_url}/api/v1/apps/{app_id}", json=payload)
+                resp.raise_for_status()
+            logger.info("event_reporter.app_updated", app_id=app_id, **payload)
+            return True
+        except Exception as exc:
+            logger.debug("event_reporter.update_app_error", error=str(exc))
+            return False
+
     async def create_capability(self, payload: dict) -> str | None:
         """Create a capability via the backend API. Returns the capability ID."""
         try:

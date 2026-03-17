@@ -543,6 +543,12 @@ When the gap is an improvement to existing code or infrastructure (not a new app
 - Prefer backend-first changes (API endpoints, models) over full-stack features
 - Each evolution_request should be achievable in a single code generation pass
 
+## CRITICAL RULE: When No Apps Exist
+If the Existing Apps section shows "(No apps created yet)", you MUST use CREATE_APP.
+Do NOT use EVOLVE to add backend services or infrastructure when there are no apps yet —
+that produces orphaned code that has no user-facing purpose. Always start with CREATE_APP
+to register the concept first, then use EVOLVE in subsequent cycles to build its internals.
+
 ## Instructions
 1. Carefully compare each Purpose requirement against the codebase and existing apps
 2. Identify requirements that are NOT yet implemented or are only partially implemented
@@ -719,6 +725,11 @@ NO_EVOLUTION_NEEDED
                     status=ctx.status.value,
                     request_id=ctx.request_id,
                 )
+
+                # Mark app as active once the first evolution succeeds
+                if app_id and ctx.status == EvolutionStatus.COMPLETED:
+                    await self.event_reporter.update_app(app_id, {"status": "active"})
+                    logger.info("proactive.app_activated", app_id=app_id, name=app_name)
 
         except Exception as exc:
             logger.warning("proactive.create_app_error", error=str(exc))

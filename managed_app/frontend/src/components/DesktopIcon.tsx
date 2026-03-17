@@ -13,20 +13,27 @@ const statusColors: Record<string, string> = {
 };
 
 export function DesktopIcon({ app, onClick }: DesktopIconProps) {
+  const isBuilding = app.status === "building" || app.status === "planned";
   const dotColor = statusColors[app.status] || "#94a3b8";
 
   return (
     <div
-      className="desktop-icon"
-      onClick={onClick}
-      onDoubleClick={onClick}
-      title={app.goal || app.name}
+      className={`desktop-icon${isBuilding ? " desktop-icon--building" : ""}`}
+      onClick={isBuilding ? undefined : onClick}
+      onDoubleClick={isBuilding ? undefined : onClick}
+      title={isBuilding ? `Creating ${app.name}…` : (app.goal || app.name)}
     >
       <div className="desktop-icon-img">
         <span className="desktop-icon-emoji">{app.icon || "\u{1f4e6}"}</span>
-        <span className="desktop-icon-dot" style={{ background: dotColor }} />
+        {isBuilding ? (
+          <span className="desktop-icon-building-ring" />
+        ) : (
+          <span className="desktop-icon-dot" style={{ background: dotColor }} />
+        )}
       </div>
-      <span className="desktop-icon-label">{app.name}</span>
+      <span className="desktop-icon-label">
+        {isBuilding ? "Creating…" : app.name}
+      </span>
     </div>
   );
 }
