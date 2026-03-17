@@ -67,6 +67,16 @@ v1_router.include_router(<name>_router)
 - Include proper imports and type annotations
 - Generate working, production-quality code
 
+## FORBIDDEN Paths — NEVER generate files at these paths
+⛔ `backend/alembic/versions/` — NEVER create migration files. Schema changes are managed
+   by the framework. If the plan requires a new DB table, add the SQLAlchemy model only;
+   do NOT generate an alembic migration file.
+⛔ `backend/app/core/` — this directory does not exist in this codebase.
+⛔ `backend/app/db/` — this directory does not exist in this codebase.
+⛔ `backend/app/api/deps.py` — auth deps live in `app/auth.py`, not here.
+⛔ `backend/app/api/v1/__init__.py` — do NOT modify the router registry file; the framework
+   manages router registration.
+
 Respond with a JSON array of file objects."""
 
 
@@ -131,12 +141,39 @@ class CodeGeneratorAgent(BaseAgent):
             num_files=len(result.files),
             layers=list({f.layer for f in result.files}),
         )
+        # Note: path filtering happens below; allowed_files may be fewer
+
+        # Paths the engine must never write — these would break the managed app
+        FORBIDDEN_PREFIXES = (
+            "backend/alembic/versions/",   # rogue migrations break alembic
+            "backend/app/core/",           # directory does not exist
+            "backend/app/db/",             # directory does not exist
+        )
+        FORBIDDEN_EXACT = {
+            "backend/app/api/deps.py",
+            "backend/app/api/v1/__init__.py",
+        }
+
+        allowed_files = []
+        for gen_file in result.files:
+            fp = gen_file.file_path.lstrip("/")
+            if any(fp.startswith(p) for p in FORBIDDEN_PREFIXES) or fp in FORBIDDEN_EXACT:
+                self.logger.warning(
+                    "generator.blocked_forbidden_path",
+                    path=gen_file.file_path,
+                )
+                continue
+            allowed_files.append(gen_file)
+
+        skipped = len(result.files) - len(allowed_files)
+        if skipped:
+            self.logger.warning("generator.forbidden_files_skipped", count=skipped)
 
         # Write generated files to the staging workspace
         workspace = Path(self.config.workspace_path) / ctx.request_id
         workspace.mkdir(parents=True, exist_ok=True)
 
-        for gen_file in result.files:
+        for gen_file in allowed_files:
             target = workspace / gen_file.file_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(gen_file.content)
@@ -144,7 +181,7 @@ class CodeGeneratorAgent(BaseAgent):
 
         return ctx.model_copy(
             update={
-                "generated_files": result.files,
+                "generated_files": allowed_files,
                 "status": EvolutionStatus.VALIDATING,
             }
         )
