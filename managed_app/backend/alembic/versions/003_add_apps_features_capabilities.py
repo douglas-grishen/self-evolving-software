@@ -1,7 +1,7 @@
 """Add apps, features, and capabilities tables.
 
-Revision ID: 002_apps
-Revises: 001_evolution
+Revision ID: 003_apps
+Revises: 002_admin_users
 Create Date: 2026-03-16
 
 Creates tables for:
@@ -12,8 +12,8 @@ Creates tables for:
   - app_capabilities: many-to-many junction for standalone capabilities
 """
 
-revision = "002_apps"
-down_revision = "001_evolution"
+revision = "003_apps"
+down_revision = "002_admin_users"
 branch_labels = None
 depends_on = None
 
