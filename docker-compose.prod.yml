@@ -124,7 +124,7 @@ services:
       ENGINE_REPO_ROOT: /workspace
       # --- Local deploy (never pushes to GitHub) ---
       ENGINE_EVOLVED_APP_PATH: /opt/evolved-app
-      ENGINE_DEPLOY_ROOT: /opt/self-evolving-software
+      ENGINE_DEPLOY_ROOT: /workspace
       ENGINE_COMPOSE_FILE: docker-compose.prod.yml
       # --- Runtime monitoring ---
       ENGINE_MONITOR_URL: http://backend:8000
