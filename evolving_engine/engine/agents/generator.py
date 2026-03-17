@@ -78,6 +78,9 @@ v1_router.include_router(<name>_router)
    manages router registration.
 ⛔ `backend/app/models/__init__.py` — do NOT modify the models package init; the framework
    manages which models are loaded.
+⛔ `backend/app/config.py` — core application settings; modifying this breaks Alembic and the
+   entire backend startup. Never overwrite it.
+⛔ `backend/alembic/env.py` — Alembic environment config; never overwrite it.
 
 Respond with a JSON array of file objects."""
 
@@ -155,6 +158,8 @@ class CodeGeneratorAgent(BaseAgent):
             "backend/app/api/deps.py",
             "backend/app/api/v1/__init__.py",  # framework manages router registration
             "backend/app/models/__init__.py",  # framework manages model registration
+            "backend/app/config.py",           # core settings — engine overwrites break alembic
+            "backend/alembic/env.py",          # alembic env — must not be overwritten
         }
 
         allowed_files = []
