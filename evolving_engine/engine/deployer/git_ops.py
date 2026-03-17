@@ -193,18 +193,30 @@ class LocalDeployer:
 
         Only rebuilds backend and frontend — the engine and postgres are
         managed by the framework compose file separately.
+
+        Uses ``-p <project>`` to match the existing Docker Compose stack,
+        preventing creation of duplicate containers when the engine runs
+        from a different working directory (e.g. /workspace inside the
+        container vs /opt/self-evolving-software on the host).
         """
         deploy_root = Path(self.config.deploy_root).resolve()
         compose_file = self.config.compose_file
+        project = self.config.compose_project
 
         if not (deploy_root / compose_file).exists():
             return False, f"Compose file not found: {deploy_root / compose_file}"
 
+        # Base compose command with project name to match existing stack
+        compose_cmd = [
+            "docker", "compose",
+            "-p", project,
+            "-f", str(deploy_root / compose_file),
+        ]
+
         try:
             # Rebuild backend + frontend images
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", str(deploy_root / compose_file),
-                "build", "backend", "frontend",
+                *compose_cmd, "build", "backend", "frontend",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(deploy_root),
@@ -218,8 +230,7 @@ class LocalDeployer:
 
             # Restart only backend + frontend (not engine, not postgres)
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "-f", str(deploy_root / compose_file),
-                "up", "-d", "--no-deps", "backend", "frontend",
+                *compose_cmd, "up", "-d", "--no-deps", "backend", "frontend",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(deploy_root),

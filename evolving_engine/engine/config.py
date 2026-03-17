@@ -89,6 +89,10 @@ class EngineSettings(BaseSettings):
     # Root of the framework deployment (where compose file lives)
     deploy_root: Path = Path("/opt/self-evolving-software")
 
+    # Docker compose project name — must match the running stack so the deployer
+    # restarts the correct containers (not create duplicates).
+    compose_project: str = "self-evolving-software"
+
     aws_region: str = "us-east-1"
 
     # ---------------------------------------------------------------------------
