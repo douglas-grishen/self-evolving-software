@@ -32,7 +32,35 @@ For each file in the plan, you must produce the COMPLETE file content.
 - For new files: generate the full file
 - For modifications: generate the entire updated file (not a diff)
 
-Rules:
+## CRITICAL: Backend Import Conventions (use EXACTLY these paths)
+
+```python
+# Database session — ALWAYS use this, never app.core.* or app.db.*
+from app.database import get_db, Base, AsyncSessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# Auth
+from app.auth import get_current_admin
+
+# Config/settings
+from app.config import settings
+
+# Existing models (import from their actual files)
+from app.models.base import Base          # SQLAlchemy declarative base
+from app.models.evolution import EvolutionEvent, Inception, PurposeVersion
+from app.models.admin import AdminUser
+from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
+
+# Router registration in app/api/v1/__init__.py
+from app.api.v1.<module> import router as <name>_router
+v1_router.include_router(<name>_router)
+```
+
+⚠️  NEVER use: `from app.core.*`, `from app.db.*`, `from app.models.company import Company`
+    — these modules DO NOT EXIST in this codebase.
+⚠️  New models must inherit from `Base` imported from `app.models.base`, NOT `app.database`.
+
+## Rules
 - Follow existing code conventions visible in the repo map
 - Use async/await for all FastAPI endpoints and DB operations
 - Use functional React components with TypeScript strict mode
