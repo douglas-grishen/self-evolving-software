@@ -1,0 +1,258 @@
+.tasks-view {
+  padding: 12px 16px;
+  height: 100%;
+  overflow-y: auto;
+  font-size: 13px;
+  color: #e2e8f0;
+}
+
+.tasks-loading,
+.tasks-empty {
+  text-align: center;
+  padding: 40px 0;
+  color: #64748b;
+}
+.tasks-empty-sub {
+  font-size: 12px;
+  margin-top: 4px;
+  color: #475569;
+}
+
+/* ── Section ──────────────────────────────────────────────────────── */
+.tasks-section {
+  margin-bottom: 20px;
+}
+
+.tasks-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #94a3b8;
+  margin: 0 0 8px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tasks-section-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tasks-section-dot--active { background: #3b82f6; animation: pulse 1.5s ease-in-out infinite; }
+.tasks-section-dot--failed  { background: #ef4444; }
+.tasks-section-dot--done    { background: #22c55e; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Card ─────────────────────────────────────────────────────────── */
+.task-card {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
+}
+.task-card:hover {
+  border-color: rgba(100, 116, 139, 0.7);
+  background: rgba(30, 41, 59, 0.9);
+}
+.task-card--received,
+.task-card--running {
+  border-left: 3px solid #3b82f6;
+}
+.task-card--completed {
+  border-left: 3px solid #22c55e;
+}
+.task-card--failed {
+  border-left: 3px solid #ef4444;
+}
+
+.task-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.task-status-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.task-title {
+  flex: 1;
+  line-height: 1.4;
+  font-size: 12.5px;
+  color: #cbd5e1;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.task-risk {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.task-source { font-size: 11px; }
+.task-time   { white-space: nowrap; }
+.task-duration {
+  background: rgba(71, 85, 105, 0.4);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+.task-chevron { font-size: 10px; color: #475569; }
+
+/* ── Progress bar ─────────────────────────────────────────────────── */
+.task-progress-bar {
+  height: 2px;
+  background: rgba(59, 130, 246, 0.15);
+  overflow: hidden;
+}
+.task-progress-bar-inner {
+  height: 100%;
+  width: 40%;
+  background: #3b82f6;
+  animation: progress-slide 1.8s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0%   { transform: translateX(-200%); }
+  100% { transform: translateX(350%); }
+}
+
+/* ── Expanded body ────────────────────────────────────────────────── */
+.task-card-body {
+  padding: 0 12px 12px 34px;
+  border-top: 1px solid rgba(71, 85, 105, 0.2);
+}
+
+.task-error {
+  color: #fca5a5;
+  font-size: 12px;
+  margin: 8px 0 6px;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.task-request {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.task-request strong { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.task-request p { margin: 4px 0 0; line-height: 1.5; }
+
+.task-pipeline {
+  margin-top: 10px;
+  font-size: 11px;
+}
+.task-pipeline strong { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.task-pipeline ul { margin: 4px 0 0; padding: 0; list-style: none; }
+
+.task-step {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 0;
+  color: #64748b;
+}
+.task-step--completed { color: #86efac; }
+.task-step--failed    { color: #fca5a5; }
+
+.task-step-agent  { font-weight: 600; min-width: 80px; }
+.task-step-action { color: #94a3b8; }
+.task-step-details { color: #64748b; font-size: 10px; }
+
+/* ── Files badge ──────────────────────────────────────────────────── */
+.task-files-badge {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── File list ────────────────────────────────────────────────────── */
+.task-files {
+  margin-top: 10px;
+}
+.task-files-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.task-files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.task-file-item {
+  display: grid;
+  grid-template-columns: 18px 52px 1fr auto;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.task-file-action { font-size: 12px; }
+.task-file-layer  {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.task-file-path {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: #cbd5e1;
+  word-break: break-all;
+}
+.task-file-verb {
+  font-size: 10px;
+  color: #475569;
+  white-space: nowrap;
+}
+.task-file-desc {
+  display: none; /* shown on hover via title attr — keeps layout clean */
+}
+
+/* ── Commit ───────────────────────────────────────────────────────── */
+.task-commit {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #64748b;
+}
+.task-commit code {
+  background: rgba(71, 85, 105, 0.3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+}

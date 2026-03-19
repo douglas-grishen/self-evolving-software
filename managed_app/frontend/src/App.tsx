@@ -6,6 +6,8 @@ import { DesktopIcon } from "./components/DesktopIcon";
 import { HealthCheck } from "./components/HealthCheck";
 import { LoginScreen } from "./components/LoginScreen";
 import { SettingsView } from "./components/SettingsView";
+import { ChatView } from "./components/ChatView";
+import { TasksView } from "./components/TasksView";
 import { WelcomePurpose } from "./components/WelcomePurpose";
 import { EvolutionTimeline } from "./components/evolution/EvolutionTimeline";
 import { InceptionPanel } from "./components/evolution/InceptionPanel";
@@ -16,7 +18,7 @@ import { useEvolutionStatus } from "./hooks/useEvolutionApi";
 import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
-type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings";
+type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat";
 type WindowId = SystemWindowId | `app:${string}`;
 
 function ToolbarStatus() {
@@ -89,6 +91,12 @@ function App() {
           </button>
           <button className="menubar-item" onClick={() => toggle("purpose")}>
             Purpose
+          </button>
+          <button className="menubar-item" onClick={() => toggle("tasks")}>
+            Tasks
+          </button>
+          <button className="menubar-item" onClick={() => toggle("chat")}>
+            Chat
           </button>
           <button className="menubar-item" onClick={() => toggle("architecture")}>
             Architecture
@@ -169,6 +177,18 @@ function App() {
       {activeWindow === "purpose" && (
         <AppWindow title="System Purpose" onClose={close} width="640px" height="560px">
           <PurposeViewer />
+        </AppWindow>
+      )}
+
+      {activeWindow === "tasks" && (
+        <AppWindow title="Evolution Tasks" onClose={close} width="680px" height="580px">
+          <TasksView />
+        </AppWindow>
+      )}
+
+      {activeWindow === "chat" && (
+        <AppWindow title="✦ Chat with the System" onClose={close} width="640px" height="560px">
+          <ChatView />
         </AppWindow>
       )}
 
