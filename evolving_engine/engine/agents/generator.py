@@ -9,12 +9,14 @@ Responsibilities (MAPE-K: Plan + Execute):
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from engine.agents.base import BaseAgent
 from engine.context import EvolutionContext
 from engine.models.evolution import EvolutionStatus, GeneratedFile
+from engine.models.memory import EngineMemory
 from engine.providers.base import BaseLLMProvider
 
 SYSTEM_PROMPT = """You are an expert full-stack code generator for a self-evolving software system.
@@ -35,8 +37,8 @@ For each file in the plan, you must produce the COMPLETE file content.
 ## CRITICAL: Backend Import Conventions (use EXACTLY these paths)
 
 ```python
-# Database session — ALWAYS use this, never app.core.* or app.db.*
-from app.database import get_db, Base, AsyncSessionLocal
+# Database session — ALWAYS use this pattern for FastAPI endpoints
+from app.database import get_db          # FastAPI Depends dependency
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Auth
@@ -46,19 +48,20 @@ from app.auth import get_current_admin
 from app.config import settings
 
 # Existing models (import from their actual files)
-from app.models.base import Base          # SQLAlchemy declarative base
-from app.models.evolution import EvolutionEvent, Inception, PurposeVersion
+from app.models.base import Base                     # SQLAlchemy declarative base
+from app.models.evolution import EvolutionEventRecord, InceptionRecord, PurposeRecord
 from app.models.admin import AdminUser
 from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 
-# Router registration in app/api/v1/__init__.py
-from app.api.v1.<module> import router as <name>_router
-v1_router.include_router(<name>_router)
+# New router files are auto-discovered — just define router = APIRouter(...)
+# Do NOT touch app/api/v1/__init__.py
 ```
 
 ⚠️  NEVER use: `from app.core.*`, `from app.db.*`, `from app.models.company import Company`
     — these modules DO NOT EXIST in this codebase.
+⚠️  NEVER import `AsyncSessionLocal` from app.database — it does not exist. Use `get_db`.
 ⚠️  New models must inherit from `Base` imported from `app.models.base`, NOT `app.database`.
+⚠️  NEVER use `metadata` as a SQLAlchemy column name — it is reserved by DeclarativeBase.
 
 ## Rules
 - Follow existing code conventions visible in the repo map
@@ -83,6 +86,43 @@ v1_router.include_router(<name>_router)
 ⛔ `backend/alembic/env.py` — Alembic environment config; never overwrite it.
 
 Respond with a JSON array of file objects."""
+
+
+# The sentinel marks where lessons will be inserted in the system prompt.
+# Using partition() ensures the insertion point is robust to whitespace changes.
+_SENTINEL = "\nRespond with a JSON array of file objects."
+_MAX_INJECTED_LESSONS = 30
+_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+
+def _build_lessons_section(lessons: list[EngineMemory]) -> str:
+    """Build the lessons block to inject into the generator system prompt.
+
+    Only critical and warning lessons are injected (info is UI-only, never LLM context).
+    Sorted: critical first, then by times_reinforced descending (most-repeated first).
+    Hard-capped at _MAX_INJECTED_LESSONS to prevent context bloat (~4500 tokens max).
+    Returns empty string when there are no injectable lessons.
+    """
+    injectable = [l for l in lessons if l.severity in ("critical", "warning")]
+    injectable.sort(
+        key=lambda l: (_SEVERITY_RANK.get(l.severity, 9), -l.times_reinforced)
+    )
+    injectable = injectable[:_MAX_INJECTED_LESSONS]
+
+    if not injectable:
+        return ""
+
+    lines = [
+        f"- [{l.severity.upper()}] {l.title}: {l.content}"
+        for l in injectable
+    ]
+    return (
+        "\n\n## Lessons Learned — DO NOT Repeat These Mistakes\n"
+        "The following patterns have caused failures in previous evolution cycles. "
+        "Violating any CRITICAL item will cause immediate validation failure.\n\n"
+        + "\n".join(lines)
+        + "\n"
+    )
 
 
 class GeneratedFileList(BaseModel):
@@ -133,9 +173,23 @@ class CodeGeneratorAgent(BaseAgent):
             f"Generate the complete file contents for each change in the plan."
         )
 
+        # Compose system prompt: static base + dynamic lessons section
+        lessons_section = _build_lessons_section(ctx.lessons)
+        if lessons_section:
+            base, _, end = SYSTEM_PROMPT.partition(_SENTINEL)
+            effective_system = base + lessons_section + _SENTINEL
+            self.logger.debug(
+                "generator.lessons_injected",
+                count=sum(
+                    1 for l in ctx.lessons if l.severity in ("critical", "warning")
+                ),
+            )
+        else:
+            effective_system = SYSTEM_PROMPT
+
         # Generate code via LLM
         result = await self.provider.generate_structured(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=effective_system,
             user_prompt=user_prompt,
             response_model=GeneratedFileList,
             max_tokens=self.config.max_tokens,

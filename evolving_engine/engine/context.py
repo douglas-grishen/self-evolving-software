@@ -27,6 +27,7 @@ from engine.models.evolution import (
     GeneratedFile,
     ValidationResult,
 )
+from engine.models.memory import EngineMemory
 from engine.models.repo_map import RepoMap
 
 
@@ -53,6 +54,10 @@ class EvolutionContext(BaseModel):
 
     # Produced by Data Manager Agent
     repo_map: RepoMap | None = None
+
+    # Lessons fetched from backend at the start of each cycle (by DataManagerAgent).
+    # Injected into the code generator's system prompt to prevent repeated mistakes.
+    lessons: list[EngineMemory] = Field(default_factory=list)
 
     # Produced by Leader Agent
     plan: EvolutionPlan | None = None

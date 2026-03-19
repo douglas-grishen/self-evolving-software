@@ -97,13 +97,20 @@ class Orchestrator:
         # Purpose — the guiding specification for all evolution decisions
         self.purpose = self._load_purpose()
 
+        # Event reporter — fire-and-forget communication with backend API
+        # Must be created before DataManagerAgent (which receives a reference to it)
+        self.event_reporter = EventReporter(self.config.monitor_url)
+
         # Agents (shared by both triggered and continuous modes)
         self.leader = LeaderAgent(
             provider=self.provider,
             purpose=self.purpose,
             config=self.config,
         )
-        self.data_manager = DataManagerAgent(config=self.config)
+        self.data_manager = DataManagerAgent(
+            config=self.config,
+            event_reporter=self.event_reporter,  # enables lesson fetching per cycle
+        )
         self.generator = CodeGeneratorAgent(provider=self.provider, config=self.config)
         self.validator = CodeValidatorAgent(sandbox=self.sandbox, config=self.config)
 
@@ -117,9 +124,6 @@ class Orchestrator:
             latency_threshold_ms=self.config.monitor_latency_threshold_ms,
             db_latency_threshold_ms=self.config.monitor_db_latency_threshold_ms,
         )
-
-        # Event reporter — fire-and-forget communication with backend API
-        self.event_reporter = EventReporter(self.config.monitor_url)
 
         # Purpose evolver — processes Inceptions to modify the Purpose
         self.purpose_evolver = PurposeEvolver(
@@ -183,6 +187,13 @@ class Orchestrator:
 
         # Report pipeline completion to backend
         await self.event_reporter.post_event(ctx)
+
+        # Auto-extract a lesson if this cycle failed or had validation retries
+        should_extract = ctx.status.value == "failed" or (
+            ctx.status.value == "completed" and ctx.retry_count > 0
+        )
+        if should_extract:
+            await self._extract_lesson_from_failure(ctx)
 
         logger.info(
             "pipeline.complete",
@@ -942,6 +953,104 @@ NO_EVOLUTION_NEEDED
             return purpose
         # Fallback to local file
         return self._load_purpose()
+
+    # -----------------------------------------------------------------------
+    # Internal — lesson extraction
+    # -----------------------------------------------------------------------
+
+    async def _extract_lesson_from_failure(self, ctx: EvolutionContext) -> None:
+        """Analyze a failed or retried evolution and auto-generate a lesson.
+
+        Called after post_event() when:
+          - ctx.status == FAILED  (all retries exhausted)
+          - ctx.status == COMPLETED and ctx.retry_count > 0  (had validation failures)
+
+        Uses the fast model. Fire-and-forget — never raises.
+        """
+        error_text = ctx.error or ""
+        validation_errors: list[str] = []
+        if ctx.validation_result and ctx.validation_result.errors:
+            validation_errors = ctx.validation_result.errors
+
+        if not error_text and not validation_errors:
+            return
+
+        combined_errors = error_text
+        if validation_errors:
+            combined_errors += "\n\nValidation errors:\n" + "\n".join(
+                f"- {e}" for e in validation_errors[:10]
+            )
+
+        context_label = (
+            "complete failure (all retries exhausted)"
+            if ctx.status.value == "failed"
+            else f"partial failure (succeeded after {ctx.retry_count} retries)"
+        )
+
+        extraction_prompt = (
+            "You are a software engineering lessons-learned extractor.\n\n"
+            f"An autonomous code-generation engine had a {context_label} "
+            "while evolving a FastAPI + React application.\n\n"
+            "## Error / Failure Evidence\n"
+            f"{combined_errors[:3000]}\n\n"
+            "## Evolution Request\n"
+            f"{ctx.request.user_request[:400]}\n\n"
+            "## Task\n"
+            "Determine if this failure reveals a REUSABLE lesson — a coding pattern "
+            "the engine should remember and avoid in future cycles.\n\n"
+            "If yes, respond with EXACTLY this JSON (no markdown, no explanation):\n"
+            '{"category": "<forbidden_pattern|best_practice|bug_fix|architecture_note>", '
+            '"title": "<short title max 120 chars>", '
+            '"content": "<1-3 sentences, specific and actionable>", '
+            '"severity": "<critical|warning>"}\n\n'
+            "severity=critical ONLY if repeating this will always cause a crash.\n"
+            "Be specific: include exact symbol/name/path to avoid.\n"
+            "If the failure is transient (network, timeout, environment), "
+            "respond with exactly: NO_LESSON"
+        )
+
+        try:
+            response = await self.provider.generate(
+                system_prompt=(
+                    "You are a senior software engineer extracting actionable lessons "
+                    "from code generation failures."
+                ),
+                user_prompt=extraction_prompt,
+                max_tokens=512,
+                model_override="fast",
+            )
+            text = response.strip()
+
+            if "NO_LESSON" in text:
+                logger.info(
+                    "lesson_extraction.no_lesson",
+                    request_id=ctx.request_id,
+                )
+                return
+
+            import json as _json
+            lesson_data = _json.loads(text)
+
+            await self.event_reporter.post_lesson(
+                category=lesson_data["category"],
+                title=lesson_data["title"],
+                content=lesson_data["content"],
+                severity=lesson_data["severity"],
+                source="auto",
+            )
+            logger.info(
+                "lesson_extraction.posted",
+                request_id=ctx.request_id,
+                title=lesson_data.get("title", "")[:80],
+                severity=lesson_data.get("severity"),
+            )
+
+        except Exception as exc:
+            logger.debug(
+                "lesson_extraction.error",
+                request_id=ctx.request_id,
+                error=str(exc),
+            )
 
     # -----------------------------------------------------------------------
     # Internal — state machine

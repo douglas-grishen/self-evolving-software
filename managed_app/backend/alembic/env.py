@@ -13,6 +13,7 @@ import app.models.evolution  # noqa: F401 — register ORM models for Alembic au
 import app.models.admin  # noqa: F401 — register admin models
 import app.models.apps  # noqa: F401 — register apps/features/capabilities models
 import app.models.system_settings  # noqa: F401 — register system_settings model
+import app.models.memory  # noqa: F401 — register engine_memory model
 
 config = context.config
 

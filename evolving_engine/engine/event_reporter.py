@@ -20,6 +20,7 @@ import structlog
 
 from engine.context import EvolutionContext
 from engine.models.inception import InceptionRequest, InceptionResult, InceptionSource
+from engine.models.memory import EngineMemory
 from engine.models.purpose import Purpose
 
 logger = structlog.get_logger()
@@ -66,8 +67,20 @@ class EventReporter:
         if ctx.status.value in ("completed", "failed"):
             payload["completed_at"] = datetime.now(timezone.utc).isoformat()
 
+        # Structured events_json: plan file changes + audit history
+        events_data: dict[str, Any] = {}
+        if ctx.plan:
+            events_data["plan_changes"] = [
+                {
+                    "file_path": c.file_path,
+                    "action": c.action,
+                    "description": c.description,
+                    "layer": c.layer,
+                }
+                for c in ctx.plan.changes
+            ]
         if ctx.history:
-            payload["events_json"] = [
+            events_data["history"] = [
                 {
                     "timestamp": e.timestamp.isoformat(),
                     "agent": e.agent,
@@ -77,6 +90,8 @@ class EventReporter:
                 }
                 for e in ctx.history
             ]
+        if events_data:
+            payload["events_json"] = events_data
 
         await self._post(f"{self._evolution_url}/events", payload)
 
@@ -252,6 +267,78 @@ class EventReporter:
             return cap_id
         except Exception as exc:
             logger.debug("event_reporter.create_capability_error", error=str(exc))
+            return None
+
+    # ------------------------------------------------------------------
+    # Engine Memory (Lessons Learned)
+    # ------------------------------------------------------------------
+
+    async def fetch_lessons(self) -> list[EngineMemory]:
+        """Fetch all active lessons from the backend memory store.
+
+        Called by DataManagerAgent at the start of every evolution cycle.
+        Returns an empty list on any error — the engine continues without lessons
+        rather than blocking on a backend unavailability.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(
+                    f"{self.base_url}/api/v1/memory",
+                    params={"active_only": "true"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            lessons = [EngineMemory.from_api_dict(item) for item in data]
+            if lessons:
+                logger.info(
+                    "event_reporter.lessons_fetched",
+                    count=len(lessons),
+                    critical=sum(1 for l in lessons if l.severity == "critical"),
+                    warning=sum(1 for l in lessons if l.severity == "warning"),
+                )
+            return lessons
+        except Exception as exc:
+            logger.debug("event_reporter.fetch_lessons_error", error=str(exc))
+            return []
+
+    async def post_lesson(
+        self,
+        category: str,
+        title: str,
+        content: str,
+        severity: str = "warning",
+        source: str = "auto",
+    ) -> str | None:
+        """Post a new lesson to the backend memory store.
+
+        Called by the orchestrator after analyzing a failed or retried evolution.
+        Returns the new lesson ID, or None on error.
+        """
+        payload = {
+            "category": category,
+            "title": title,
+            "content": content,
+            "severity": severity,
+            "source": source,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/v1/memory",
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            lesson_id = data.get("id")
+            logger.info(
+                "event_reporter.lesson_posted",
+                lesson_id=lesson_id,
+                severity=severity,
+                title=title[:80],
+            )
+            return lesson_id
+        except Exception as exc:
+            logger.debug("event_reporter.post_lesson_error", error=str(exc))
             return None
 
     # ------------------------------------------------------------------

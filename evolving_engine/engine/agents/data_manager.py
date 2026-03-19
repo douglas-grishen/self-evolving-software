@@ -20,18 +20,28 @@ from engine.repo.scanner import build_repo_map
 
 
 class DataManagerAgent(BaseAgent):
-    """Scans the managed application and produces a RepoMap."""
+    """Scans the managed application and produces a RepoMap.
 
-    def __init__(self, managed_app_path: Path | None = None, **kwargs) -> None:
+    Also fetches inter-session lessons from the backend memory store so downstream
+    agents (especially CodeGeneratorAgent) can avoid repeating past mistakes.
+    """
+
+    def __init__(
+        self,
+        managed_app_path: Path | None = None,
+        event_reporter=None,  # EventReporter | None
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.managed_app_path = managed_app_path or self.config.managed_app_path
+        self.event_reporter = event_reporter
 
     @property
     def name(self) -> str:
         return "data_manager"
 
     async def _execute(self, ctx: EvolutionContext) -> EvolutionContext:
-        """Scan the repository and attach the RepoMap to the context."""
+        """Scan the repository and attach the RepoMap + lessons to the context."""
         app_path = Path(self.managed_app_path).resolve()
 
         if not app_path.exists():
@@ -45,9 +55,15 @@ class DataManagerAgent(BaseAgent):
             context_chars=len(repo_map.to_context_string()),
         )
 
+        # Fetch inter-session lessons (fire-and-forget: returns [] if backend unreachable)
+        lessons = []
+        if self.event_reporter:
+            lessons = await self.event_reporter.fetch_lessons()
+
         return ctx.model_copy(
             update={
                 "repo_map": repo_map,
+                "lessons": lessons,
                 "status": EvolutionStatus.GENERATING,
             }
         )
