@@ -30,7 +30,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MODEL = "claude-sonnet-4-5-20250929"
+_MODEL = "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ its Purpose, architecture, current apps, evolution history, what works, what fai
 
 Be conversational, clear, and precise. Use the live data below to give accurate answers. \
 When asked about something not in the data, be honest. \
-Answer in the same language the user uses (Spanish or English).
+Always answer in English.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SYSTEM PURPOSE (what this software is meant to become)

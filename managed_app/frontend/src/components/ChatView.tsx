@@ -17,11 +17,11 @@ interface Message {
 // ---------------------------------------------------------------------------
 
 const SUGGESTIONS = [
-  "¿Qué apps existen actualmente?",
-  "¿Qué está tratando de construir el engine?",
-  "¿Por qué están fallando las evoluciones?",
-  "¿Cuál es el Purpose del sistema?",
-  "¿Qué archivos ha creado o modificado el engine?",
+  "What apps currently exist?",
+  "What is the engine trying to build?",
+  "Why are evolutions failing?",
+  "What is the system's Purpose?",
+  "What files has the engine created or modified?",
   "Explain how the MAPE-K loop works",
 ];
 
@@ -35,7 +35,7 @@ export function ChatView() {
       id: "welcome",
       role: "assistant",
       content:
-        "Hola! Soy tu asistente para este sistema. Tengo acceso en tiempo real a todo: el Purpose, las apps construidas, el historial de evoluciones, las inceptions, y cómo funciona la arquitectura.\n\n¿Qué quieres saber?",
+        "Hi! I'm your assistant for this system. I have real-time access to everything: the Purpose, built apps, evolution history, inceptions, and how the architecture works.\n\nWhat would you like to know?",
     },
   ]);
   const [input, setInput] = useState("");

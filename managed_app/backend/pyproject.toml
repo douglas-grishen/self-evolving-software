@@ -1,6 +1,6 @@
 [project]
 name = "managed-app-backend"
-version = "0.1.0"
+version = "1.0.1"
 description = "Managed web application backend — part of the Self-Evolving Software system"
 requires-python = ">=3.11"
 dependencies = [
