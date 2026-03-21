@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AppWindow } from "./components/AppWindow";
 import { AppViewer } from "./components/AppViewer";
 import { ArchitectureView } from "./components/ArchitectureView";
+import { DatabaseView } from "./components/DatabaseView";
 import { DesktopIcon } from "./components/DesktopIcon";
 import { HealthCheck } from "./components/HealthCheck";
 import { LoginScreen } from "./components/LoginScreen";
@@ -18,7 +19,7 @@ import { useEvolutionStatus } from "./hooks/useEvolutionApi";
 import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
-type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat";
+type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat" | "database";
 type WindowId = SystemWindowId | `app:${string}`;
 
 function ToolbarStatus() {
@@ -43,7 +44,7 @@ function App() {
   const auth = useAuth();
   const { status, refresh: refreshStatus } = useEvolutionStatus();
   const { apps } = useApps();
-  const { deploy_version } = useSystemInfo();
+  const { deploy_version, version } = useSystemInfo();
   const [activeWindow, setActiveWindow] = useState<WindowId | null>(null);
   const [purposeDismissed, setPurposeDismissed] = useState(false);
 
@@ -101,6 +102,9 @@ function App() {
           <button className="menubar-item" onClick={() => toggle("architecture")}>
             Architecture
           </button>
+          <button className="menubar-item" onClick={() => toggle("database")}>
+            Database
+          </button>
           <button className="menubar-item" onClick={() => toggle("health")}>
             Health
           </button>
@@ -136,12 +140,12 @@ function App() {
           </div>
         )}
 
-        {/* Subtle deploy version — bottom-right corner */}
+        {/* Subtle version — bottom-right corner */}
         <span
           className="desktop-version"
-          title={`Autonomous deploy #${deploy_version}`}
+          title={`Version ${version}${deploy_version ? ` (deploy #${deploy_version})` : ''}`}
         >
-          v.{deploy_version}
+          v.{version}
         </span>
       </div>
 
@@ -195,6 +199,12 @@ function App() {
       {activeWindow === "architecture" && (
         <AppWindow title="System Architecture" onClose={close} width="760px" height="580px">
           <ArchitectureView />
+        </AppWindow>
+      )}
+
+      {activeWindow === "database" && (
+        <AppWindow title="Database Schema" onClose={close} width="800px" height="580px">
+          <DatabaseView />
         </AppWindow>
       )}
 

@@ -1,8 +1,19 @@
 """System info endpoint — exposes build-time metadata baked in by the engine."""
 
 from fastapi import APIRouter
+import tomllib
 
 router = APIRouter(prefix="/system", tags=["system"])
+
+
+def _get_version() -> str:
+    """Get version from pyproject.toml"""
+    try:
+        with open("pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+            return data.get("project", {}).get("version", "0.0.0")
+    except Exception:
+        return "0.0.0"
 
 
 @router.get("/info")
@@ -19,4 +30,5 @@ async def system_info() -> dict:
     except ImportError:
         DEPLOY_VERSION = 0
 
-    return {"deploy_version": DEPLOY_VERSION}
+    version = _get_version()
+    return {"deploy_version": DEPLOY_VERSION, "version": version}

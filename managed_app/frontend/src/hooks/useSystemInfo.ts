@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 
 interface SystemInfo {
   deploy_version: number;
+  version?: string;
 }
 
 /**
- * Polls /api/v1/system/info every 30 seconds to get the current deploy version.
- * The version is baked into the Docker image by the engine on each successful deploy.
+ * Polls /api/v1/system/info every 30 seconds to get the current version.
  */
 export function useSystemInfo(): SystemInfo {
-  const [info, setInfo] = useState<SystemInfo>({ deploy_version: 0 });
+  const [info, setInfo] = useState<SystemInfo>({ deploy_version: 0, version: "0.0.0" });
 
   useEffect(() => {
     let cancelled = false;

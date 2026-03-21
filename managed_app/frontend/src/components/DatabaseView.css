@@ -1,0 +1,197 @@
+.database-view {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #f5f5f5;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.database-loading,
+.database-empty,
+.database-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: #999;
+  font-size: 14px;
+}
+
+.database-error {
+  color: #d32f2f;
+}
+
+/* Left panel: Tables */
+.database-tables-panel {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  border-right: 1px solid #ddd;
+  background: #fafafa;
+}
+
+.database-panel-header {
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #666;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f0f0f0;
+}
+
+.database-tables-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.database-table-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+  transition: all 0.15s;
+}
+
+.database-table-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: #ddd;
+}
+
+.database-table-item.active {
+  background: #007acc;
+  color: white;
+  border-color: #005a9e;
+  font-weight: 500;
+}
+
+.database-table-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+/* Right panel: Columns */
+.database-columns-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.database-columns-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Table styles */
+.database-columns-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.database-columns-table thead {
+  background: #f5f5f5;
+  border-bottom: 2px solid #ddd;
+  position: sticky;
+  top: 0;
+}
+
+.database-columns-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-right: 1px solid #e0e0e0;
+}
+
+.database-columns-table th:last-child {
+  border-right: none;
+}
+
+.database-columns-table tbody tr {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.database-columns-table tbody tr:hover {
+  background: #f9f9f9;
+}
+
+.database-columns-table td {
+  padding: 8px 12px;
+  border-right: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+.database-columns-table td:last-child {
+  border-right: none;
+}
+
+.column-name code {
+  background: #f0f0f0;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  color: #d73a49;
+}
+
+.column-type {
+  color: #0066cc;
+  font-family: "Courier New", monospace;
+  font-weight: 500;
+}
+
+.column-nullable {
+  text-align: center;
+  color: #666;
+  font-weight: 600;
+}
+
+.column-default code {
+  background: #f0f0f0;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  color: #6f42c1;
+}
+
+/* Scrollbar */
+.database-tables-list::-webkit-scrollbar,
+.database-columns-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.database-tables-list::-webkit-scrollbar-track,
+.database-columns-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.database-tables-list::-webkit-scrollbar-thumb,
+.database-columns-list::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 4px;
+}
+
+.database-tables-list::-webkit-scrollbar-thumb:hover,
+.database-columns-list::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
