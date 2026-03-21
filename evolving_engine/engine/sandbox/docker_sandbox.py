@@ -76,9 +76,17 @@ class DockerSandbox(BaseSandbox):
             errors.extend(build_errors)
             suggestions.append("Ensure Dockerfiles build without errors")
 
+        # Stage 2.5: Backend startup smoke test
+        smoke_ok = False
+        if build_ok:
+            smoke_ok, smoke_errors = await self._run_backend_import_smoke_test()
+            if not smoke_ok:
+                errors.extend(smoke_errors)
+                suggestions.append("Backend changes must import app.main successfully before deploy")
+
         # Stage 3: Integration test (only if build passed)
         tests_ok = False
-        if build_ok:
+        if build_ok and smoke_ok:
             tests_ok, test_errors = await self._run_integration_tests(sandbox_app)
             if not tests_ok:
                 errors.extend(test_errors)
@@ -90,6 +98,8 @@ class DockerSandbox(BaseSandbox):
             risk_score += 0.2
         if not build_ok:
             risk_score += 0.5
+        elif not smoke_ok:
+            risk_score += 0.5
         if not tests_ok:
             risk_score += 0.1  # Tests are advisory — lower weight
         risk_score = min(risk_score, 1.0)
@@ -99,7 +109,7 @@ class DockerSandbox(BaseSandbox):
         # This is intentional — the managed app often has no test files yet,
         # and blocking on "no tests collected" prevents any evolution.
         return ValidationResult(
-            passed=static_ok and build_ok,
+            passed=static_ok and build_ok and smoke_ok,
             risk_score=risk_score,
             static_analysis_passed=static_ok,
             build_passed=build_ok,
@@ -226,6 +236,40 @@ class DockerSandbox(BaseSandbox):
             logger.warning("tests.backend.image_not_found")
         except Exception as exc:
             errors.append(f"Integration test error: {exc}")
+
+        return len(errors) == 0, errors
+
+    async def _run_backend_import_smoke_test(self) -> tuple[bool, list[str]]:
+        """Verify the backend image can import app.main before deployment."""
+        errors: list[str] = []
+
+        try:
+            container = self.client.containers.run(
+                "evo-sandbox-backend:test",
+                command=["python", "-c", "from app.main import app; print(app.title)"],
+                environment={
+                    "APP_DATABASE_URL": "sqlite+aiosqlite:///test.db",
+                    "APP_ENVIRONMENT": "test",
+                },
+                detach=True,
+                remove=False,
+            )
+            self.containers.append(container.id)
+
+            result = container.wait(timeout=self.config.sandbox_timeout_seconds)
+            logs = container.logs().decode()
+
+            if result["StatusCode"] != 0:
+                errors.append(f"Backend startup smoke test failed:\n{logs[-2000:]}")
+            else:
+                logger.info("tests.backend.import_smoke_passed")
+
+        except docker.errors.ContainerError as exc:
+            errors.append(f"Backend startup smoke container error: {exc}")
+        except docker.errors.ImageNotFound:
+            errors.append("Backend startup smoke image not found")
+        except Exception as exc:
+            errors.append(f"Backend startup smoke error: {exc}")
 
         return len(errors) == 0, errors
 

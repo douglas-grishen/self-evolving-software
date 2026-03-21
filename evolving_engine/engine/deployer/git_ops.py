@@ -20,6 +20,7 @@ import re
 import shutil
 from pathlib import Path
 
+import httpx
 import structlog
 from git import Repo
 from git.exc import InvalidGitRepositoryError
@@ -29,6 +30,10 @@ from engine.context import EvolutionContext
 from engine.models.evolution import DeploymentResult
 
 logger = structlog.get_logger()
+
+_RESTART_HEALTH_TIMEOUT_SECONDS = 45.0
+_RESTART_HEALTH_POLL_SECONDS = 2.0
+_RESTART_HEALTH_PATHS = ("/health", "/api/v1/health", "/api/v1/system/info")
 
 
 class LocalDeployer:
@@ -276,10 +281,64 @@ class LocalDeployer:
             if proc.returncode != 0:
                 return False, f"Restart failed: {stderr.decode()[-1000:]}"
 
-            logger.info("deploy.restart_success")
+            backend_ready, backend_msg = await self._wait_for_backend_health()
+            if not backend_ready:
+                backend_logs = await self._collect_backend_logs(compose_cmd, deploy_root)
+                return False, (
+                    "Backend did not become healthy after restart. "
+                    f"{backend_msg}\n{backend_logs}"
+                )
+
+            logger.info("deploy.restart_success", health_url=self.config.monitor_url)
             return True, "Services rebuilt and restarted"
 
         except asyncio.TimeoutError:
             return False, "Docker rebuild/restart timed out"
         except Exception as exc:
             return False, str(exc)
+
+    async def _wait_for_backend_health(self) -> tuple[bool, str]:
+        """Wait for the restarted backend to serve a healthy HTTP response."""
+        base_url = self.config.monitor_url.rstrip("/")
+        deadline = asyncio.get_running_loop().time() + _RESTART_HEALTH_TIMEOUT_SECONDS
+        last_error = "no response yet"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+            while asyncio.get_running_loop().time() < deadline:
+                for path in _RESTART_HEALTH_PATHS:
+                    url = f"{base_url}{path}"
+                    try:
+                        resp = await client.get(url)
+                        if resp.status_code < 500:
+                            logger.info(
+                                "deploy.health_check_ok",
+                                url=url,
+                                status_code=resp.status_code,
+                            )
+                            return True, f"{url} -> {resp.status_code}"
+                        last_error = f"{url} -> HTTP {resp.status_code}"
+                    except Exception as exc:
+                        last_error = f"{url} -> {exc}"
+
+                await asyncio.sleep(_RESTART_HEALTH_POLL_SECONDS)
+
+        logger.warning("deploy.health_check_failed", error=last_error)
+        return False, last_error
+
+    async def _collect_backend_logs(self, compose_cmd: list[str], deploy_root: Path) -> str:
+        """Fetch recent backend logs to explain a failed restart."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *compose_cmd, "logs", "--tail", "80", "backend",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(deploy_root),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            output = stdout.decode().strip() or stderr.decode().strip()
+            if output:
+                return f"Recent backend logs:\n{output[-2000:]}"
+        except Exception as exc:
+            logger.warning("deploy.collect_backend_logs_failed", error=str(exc))
+
+        return "Recent backend logs unavailable"
