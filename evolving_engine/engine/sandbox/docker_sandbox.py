@@ -204,7 +204,7 @@ class DockerSandbox(BaseSandbox):
             # Provide minimal env so app config can initialize without
             # connecting to a real database (tests use ASGI transport).
             test_env = {
-                "APP_DATABASE_URL": "sqlite+aiosqlite:///test.db",
+                "APP_DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/test",
                 "APP_ENVIRONMENT": "test",
             }
 
@@ -248,7 +248,7 @@ class DockerSandbox(BaseSandbox):
                 "evo-sandbox-backend:test",
                 command=["python", "-c", "from app.main import app; print(app.title)"],
                 environment={
-                    "APP_DATABASE_URL": "sqlite+aiosqlite:///test.db",
+                    "APP_DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/test",
                     "APP_ENVIRONMENT": "test",
                 },
                 detach=True,
