@@ -17,7 +17,7 @@ UI-facing endpoints (managed-system):
   GET  /status              — dashboard summary
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -202,13 +202,27 @@ async def create_purpose(
     payload: PurposeCreate,
     db: AsyncSession = Depends(get_db),
 ) -> PurposeRecord:
-    """Engine stores a new purpose version."""
-    record = PurposeRecord(
-        version=payload.version,
-        content_yaml=payload.content_yaml,
-        inception_id=payload.inception_id,
+    """Engine stores a new purpose version.
+
+    Startup can legitimately re-post the current Purpose. Treat version as an
+    idempotency key so engine restarts do not raise a 500 on duplicate inserts.
+    """
+    result = await db.execute(
+        select(PurposeRecord).where(PurposeRecord.version == payload.version)
     )
-    db.add(record)
+    record = result.scalar_one_or_none()
+
+    if record:
+        record.content_yaml = payload.content_yaml
+        record.inception_id = payload.inception_id
+    else:
+        record = PurposeRecord(
+            version=payload.version,
+            content_yaml=payload.content_yaml,
+            inception_id=payload.inception_id,
+        )
+        db.add(record)
+
     await db.flush()
     return record
 
@@ -245,6 +259,11 @@ async def dashboard_status(
     db: AsyncSession = Depends(get_db),
 ) -> DashboardStatusResponse:
     """Aggregated dashboard data for the Evolution Monitor UI."""
+    # Old terminal reports can be lost during backend restarts. Treat only
+    # recent non-terminal rows as "active" so stale historical entries do not
+    # make the UI look permanently busy.
+    active_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+
     # Count evolutions by status
     total = await db.execute(select(func.count()).select_from(EvolutionEventRecord))
     total_count = total.scalar() or 0
@@ -253,6 +272,7 @@ async def dashboard_status(
         select(func.count())
         .select_from(EvolutionEventRecord)
         .where(EvolutionEventRecord.status.notin_(["completed", "failed"]))
+        .where(EvolutionEventRecord.created_at >= active_cutoff)
     )
     active_count = active.scalar() or 0
 

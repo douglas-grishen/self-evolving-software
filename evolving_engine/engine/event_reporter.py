@@ -12,6 +12,7 @@ the engine continues operating. Events are always logged locally via structlog.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,8 @@ logger = structlog.get_logger()
 
 # Timeout for API calls — short to avoid blocking the engine
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+_RETRY_BASE_DELAY_SECONDS = 1.0
+_RETRY_MAX_DELAY_SECONDS = 8.0
 
 
 class EventReporter:
@@ -93,7 +96,11 @@ class EventReporter:
         if events_data:
             payload["events_json"] = events_data
 
-        await self._post(f"{self._evolution_url}/events", payload)
+        # The final event is posted immediately after deploy. At that point the
+        # backend may still be restarting, so give terminal states extra retries
+        # to avoid leaving dashboard rows stuck in "received".
+        retries = 8 if ctx.status.value in ("completed", "failed") else 1
+        await self._post(f"{self._evolution_url}/events", payload, retries=retries)
 
     # ------------------------------------------------------------------
     # Inceptions
@@ -143,7 +150,7 @@ class EventReporter:
             "new_purpose_version": result.new_purpose_version,
             "changes_summary": result.changes_summary,
         }
-        await self._put(f"{self._evolution_url}/inceptions/{inception_id}", payload)
+        await self._put(f"{self._evolution_url}/inceptions/{inception_id}", payload, retries=3)
 
     # ------------------------------------------------------------------
     # Purpose
@@ -199,7 +206,7 @@ class EventReporter:
             "content_yaml": purpose.to_yaml_string(),
             "inception_id": inception_id,
         }
-        await self._post(f"{self._evolution_url}/purpose", payload)
+        await self._post(f"{self._evolution_url}/purpose", payload, retries=3)
 
     # ------------------------------------------------------------------
     # Apps, Features & Capabilities
@@ -345,22 +352,56 @@ class EventReporter:
     # Internal HTTP helpers
     # ------------------------------------------------------------------
 
-    async def _post(self, url: str, payload: dict) -> None:
+    async def _post(self, url: str, payload: dict, retries: int = 1) -> None:
         """Fire-and-forget POST."""
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-            logger.debug("event_reporter.post_ok", url=url)
-        except Exception as exc:
-            logger.debug("event_reporter.post_error", url=url, error=str(exc))
+        for attempt in range(1, retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                logger.debug("event_reporter.post_ok", url=url, attempt=attempt)
+                return
+            except Exception as exc:
+                if attempt >= retries:
+                    logger.debug("event_reporter.post_error", url=url, error=str(exc), attempt=attempt)
+                    return
 
-    async def _put(self, url: str, payload: dict) -> None:
+                delay = min(
+                    _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                    _RETRY_MAX_DELAY_SECONDS,
+                )
+                logger.debug(
+                    "event_reporter.post_retry",
+                    url=url,
+                    error=str(exc),
+                    attempt=attempt,
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)
+
+    async def _put(self, url: str, payload: dict, retries: int = 1) -> None:
         """Fire-and-forget PUT."""
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                resp = await client.put(url, json=payload)
-                resp.raise_for_status()
-            logger.debug("event_reporter.put_ok", url=url)
-        except Exception as exc:
-            logger.debug("event_reporter.put_error", url=url, error=str(exc))
+        for attempt in range(1, retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                    resp = await client.put(url, json=payload)
+                    resp.raise_for_status()
+                logger.debug("event_reporter.put_ok", url=url, attempt=attempt)
+                return
+            except Exception as exc:
+                if attempt >= retries:
+                    logger.debug("event_reporter.put_error", url=url, error=str(exc), attempt=attempt)
+                    return
+
+                delay = min(
+                    _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+                    _RETRY_MAX_DELAY_SECONDS,
+                )
+                logger.debug(
+                    "event_reporter.put_retry",
+                    url=url,
+                    error=str(exc),
+                    attempt=attempt,
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)

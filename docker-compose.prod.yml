@@ -118,10 +118,15 @@ services:
     restart: always
     environment:
       # --- Scope: what the engine can observe and modify ---
-      ENGINE_MANAGED_APP_PATH: /workspace/managed_app
+      # In production the managed app lives in /opt/evolved-app, not in the
+      # read-only GitHub template mounted at /workspace/managed_app.
+      ENGINE_MANAGED_APP_PATH: /opt/evolved-app
       ENGINE_SELF_PATH: /workspace/evolving_engine
       ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
       ENGINE_REPO_ROOT: /workspace
+      ENGINE_GENESIS_PATH: /workspace/genesis.yaml
+      ENGINE_PURPOSE_PATH: /workspace/purpose.yaml
+      ENGINE_PURPOSE_HISTORY_PATH: /workspace/purpose_history
       # --- Local deploy (never pushes to GitHub) ---
       ENGINE_EVOLVED_APP_PATH: /opt/evolved-app
       ENGINE_DEPLOY_ROOT: /workspace
