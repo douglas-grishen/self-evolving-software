@@ -199,20 +199,20 @@ class EventReporter:
             logger.debug("event_reporter.check_trigger_error", error=str(exc))
             return False
 
-    async def post_purpose(self, purpose: Purpose, inception_id: str | None = None) -> None:
+    async def post_purpose(self, purpose: Purpose, inception_id: str | None = None) -> bool:
         """Store a purpose version in the backend DB."""
         payload = {
             "version": purpose.version,
             "content_yaml": purpose.to_yaml_string(),
             "inception_id": inception_id,
         }
-        await self._post(f"{self._evolution_url}/purpose", payload, retries=3)
+        return await self._post(f"{self._evolution_url}/purpose", payload, retries=8)
 
     # ------------------------------------------------------------------
     # Apps, Features & Capabilities
     # ------------------------------------------------------------------
 
-    async def fetch_apps(self) -> list[dict]:
+    async def fetch_apps(self) -> list[dict] | None:
         """Fetch the list of all apps from the backend."""
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -221,7 +221,19 @@ class EventReporter:
                 return resp.json()
         except Exception as exc:
             logger.debug("event_reporter.fetch_apps_error", error=str(exc))
-            return []
+            return None
+
+    async def is_backend_available(self) -> bool:
+        """Check whether the backend control-plane is currently reachable."""
+        for path in ("/health", "/api/v1/health", "/api/v1/system/info"):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+                    resp = await client.get(f"{self.base_url}{path}")
+                    if resp.status_code < 500:
+                        return True
+            except Exception:
+                continue
+        return False
 
     async def create_app(self, payload: dict) -> str | None:
         """Create a new app via the backend API. Returns the app ID."""
@@ -352,7 +364,7 @@ class EventReporter:
     # Internal HTTP helpers
     # ------------------------------------------------------------------
 
-    async def _post(self, url: str, payload: dict, retries: int = 1) -> None:
+    async def _post(self, url: str, payload: dict, retries: int = 1) -> bool:
         """Fire-and-forget POST."""
         for attempt in range(1, retries + 1):
             try:
@@ -360,11 +372,11 @@ class EventReporter:
                     resp = await client.post(url, json=payload)
                     resp.raise_for_status()
                 logger.debug("event_reporter.post_ok", url=url, attempt=attempt)
-                return
+                return True
             except Exception as exc:
                 if attempt >= retries:
                     logger.debug("event_reporter.post_error", url=url, error=str(exc), attempt=attempt)
-                    return
+                    return False
 
                 delay = min(
                     _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
@@ -379,7 +391,9 @@ class EventReporter:
                 )
                 await asyncio.sleep(delay)
 
-    async def _put(self, url: str, payload: dict, retries: int = 1) -> None:
+        return False
+
+    async def _put(self, url: str, payload: dict, retries: int = 1) -> bool:
         """Fire-and-forget PUT."""
         for attempt in range(1, retries + 1):
             try:
@@ -387,11 +401,11 @@ class EventReporter:
                     resp = await client.put(url, json=payload)
                     resp.raise_for_status()
                 logger.debug("event_reporter.put_ok", url=url, attempt=attempt)
-                return
+                return True
             except Exception as exc:
                 if attempt >= retries:
                     logger.debug("event_reporter.put_error", url=url, error=str(exc), attempt=attempt)
-                    return
+                    return False
 
                 delay = min(
                     _RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
@@ -405,3 +419,5 @@ class EventReporter:
                     delay_seconds=delay,
                 )
                 await asyncio.sleep(delay)
+
+        return False

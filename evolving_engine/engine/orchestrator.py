@@ -60,6 +60,7 @@ _MAX_CONCURRENT_EVOLUTIONS = 1
 
 # Proactive analysis runs at most once every 60 minutes (unless manually triggered)
 _PROACTIVE_INTERVAL_SECONDS = 60 * 60  # 60 minutes
+_CONTROL_PLANE_RETRY_SECONDS = 10
 
 
 class Orchestrator:
@@ -138,6 +139,7 @@ class Orchestrator:
         self._running = False
         self._evolution_count = 0
         self._last_proactive_run: float = 0.0  # epoch timestamp of last proactive analysis
+        self._purpose_synced = False
 
         # Proactive analysis cache — skip LLM call if Purpose + codebase unchanged
         self._last_analysis_hash: str = ""
@@ -247,10 +249,28 @@ class Orchestrator:
 
         # Post initial purpose to backend so the UI can display it
         if self.purpose:
-            await self.event_reporter.post_purpose(self.purpose)
+            self._purpose_synced = await self.event_reporter.post_purpose(self.purpose)
 
         while self._running:
             try:
+                backend_ready = await self.event_reporter.is_backend_available()
+                if not backend_ready:
+                    logger.warning(
+                        "control_plane.unavailable",
+                        retry_seconds=min(interval, _CONTROL_PLANE_RETRY_SECONDS),
+                    )
+                    await asyncio.sleep(min(interval, _CONTROL_PLANE_RETRY_SECONDS))
+                    continue
+
+                if self.purpose and not self._purpose_synced:
+                    self._purpose_synced = await self.event_reporter.post_purpose(self.purpose)
+                    if self._purpose_synced:
+                        logger.info(
+                            "purpose.synced_to_backend",
+                            version=self.purpose.version,
+                            identity=self.purpose.identity.name,
+                        )
+
                 # Process pending Inceptions before monitoring
                 await self._process_pending_inceptions()
 
@@ -302,7 +322,7 @@ class Orchestrator:
                         # least 1 minute since last run, trigger immediately so the
                         # desktop populates without waiting a full hour.
                         apps = await self.event_reporter.fetch_apps()
-                        if not apps:
+                        if apps == []:
                             logger.info("proactive.no_apps_bootstrap_trigger")
                             should_run_proactive = True
 
@@ -492,6 +512,10 @@ class Orchestrator:
             self._last_proactive_run = time.time()
             logger.info("proactive.analyzing_purpose", purpose_version=self.purpose.version)
 
+            if not await self.event_reporter.is_backend_available():
+                logger.warning("proactive.control_plane_unavailable")
+                return False
+
             # Build a codebase summary by scanning the evolved (deployed) code
             try:
                 scan_path = self.config.evolved_app_path
@@ -503,7 +527,10 @@ class Orchestrator:
                 return False
 
             # Fetch existing apps to understand what has already been planned/built
-            apps_summary = await self._fetch_apps_summary()
+            apps_summary, apps_available, _app_count = await self._fetch_apps_summary()
+            if not apps_available:
+                logger.warning("proactive.apps_unavailable")
+                return False
 
             # ── OPTIMIZATION #3: Cache — skip LLM if nothing changed ──────────
             purpose_yaml = self.purpose.to_yaml_string()
@@ -559,11 +586,20 @@ create the app with its features and capabilities using the CREATE_APP format be
 
 When the gap is an improvement to existing code or infrastructure (not a new app), use EVOLVE.
 
+## Existing Admin UI
+
+The framework already includes a built-in operational admin UI for health, timeline,
+purpose, settings, and evolution monitoring. Treat that as existing platform
+infrastructure, not as a missing product app.
+
 ## IMPORTANT CONSTRAINTS
 - Focus on ONE small, incremental change (max 3-5 files)
 - Do NOT try to build an entire app in one shot — start with the smallest viable piece
 - Prefer backend-first changes (API endpoints, models) over full-stack features
 - Each evolution_request should be achievable in a single code generation pass
+- If at least one business app already exists, prefer deepening that app before creating a new one
+- Do NOT propose System Monitor, Evolution Monitor, Health Monitor, or similar meta-apps
+  unless the Purpose explicitly names that as the product domain
 
 ## CRITICAL RULE: When No Apps Exist
 If the Existing Apps section shows "(No apps created yet)", you MUST use CREATE_APP.
@@ -649,7 +685,7 @@ NO_EVOLUTION_NEEDED
         app_id: str | None = None
         app_name: str = ""
         existing_apps = await self.event_reporter.fetch_apps()
-        if not existing_apps and self.purpose:
+        if existing_apps == [] and self.purpose:
             try:
                 app_name = self.purpose.identity.name.title()
                 app_goal = self.purpose.identity.description
@@ -787,12 +823,14 @@ NO_EVOLUTION_NEEDED
         except Exception as exc:
             logger.warning("proactive.create_app_error", error=str(exc))
 
-    async def _fetch_apps_summary(self) -> str:
+    async def _fetch_apps_summary(self) -> tuple[str, bool, int]:
         """Fetch the list of existing apps from the backend for the proactive analyzer."""
         try:
             apps = await self.event_reporter.fetch_apps()
+            if apps is None:
+                return "(Apps unavailable — backend API did not respond)", False, 0
             if not apps:
-                return "(No apps created yet)"
+                return "(No apps created yet)", True, 0
 
             lines = []
             for app in apps:
@@ -803,10 +841,12 @@ NO_EVOLUTION_NEEDED
                     f"[{app.get('status', '?')}] — {app.get('goal', 'no goal')} "
                     f"({feat_count} features, {cap_count} capabilities)"
                 )
-            return "\n".join(lines)
+            lines.append("")
+            lines.append("There is already at least one registered business app. Do not treat the system as app-less.")
+            return "\n".join(lines), True, len(apps)
         except Exception as exc:
             logger.debug("proactive.fetch_apps_error", error=str(exc))
-            return "(Could not fetch apps)"
+            return "(Apps unavailable — backend API did not respond)", False, 0
 
     async def _build_codebase_summary(self, app_path: Path) -> str:
         """Build a quick summary of the codebase for the proactive analyzer.
