@@ -97,6 +97,15 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
   `op.add_column`, `op.create_index`, etc.
 - Do not rely on editing `backend/app/models/__init__.py` or `backend/alembic/env.py`.
 - A schema-changing plan without its migration will be rejected by validation.
+- `frontend/src/App.tsx` and `frontend/src/App.css` define the operating-system-like desktop
+  shell. Do NOT replace or repurpose them for a product app unless the request explicitly asks
+  to redesign the desktop shell itself.
+- Product app UIs must be added under `frontend/src/apps/<AppName>/` and export a default
+  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Those app modules are opened through the existing `frontend/src/components/AppViewer.tsx`
+  integration point instead of replacing the desktop shell.
+- Match the desktop app's frontend module key to a slug of the app name (for example
+  `Competitive Intelligence` -> `competitive-intelligence`) so the shell can launch it reliably.
 
 Respond with a JSON array of file objects."""
 

@@ -86,3 +86,73 @@ def test_contract_ignores_auto_managed_plan_paths():
     errors = _validate_plan_contract(ctx)
 
     assert errors == []
+
+
+def test_contract_rejects_desktop_shell_overwrite_for_product_app_request():
+    """Product app work must not replace the desktop shell entrypoint."""
+    ctx = create_context("Build a company discovery app")
+    ctx = ctx.model_copy(
+        update={
+            "plan": EvolutionPlan(
+                summary="Replace root app with company discovery",
+                changes=[
+                    FileChange(
+                        file_path="frontend/src/App.tsx",
+                        action="modify",
+                        description="Replace desktop with product app",
+                        layer="frontend",
+                    ),
+                ],
+                requires_migration=False,
+                risk_level="high",
+                reasoning="Would repurpose the root shell",
+            ),
+            "generated_files": [
+                GeneratedFile(
+                    file_path="frontend/src/App.tsx",
+                    content="export default function App() { return null; }",
+                    action="modify",
+                    layer="frontend",
+                )
+            ],
+        }
+    )
+
+    errors = _validate_plan_contract(ctx)
+
+    assert any("Desktop shell files are protected" in error for error in errors)
+
+
+def test_contract_allows_desktop_shell_change_when_request_is_explicit():
+    """Explicit desktop shell requests are allowed through the contract."""
+    ctx = create_context("Redesign the desktop shell and menu bar")
+    ctx = ctx.model_copy(
+        update={
+            "plan": EvolutionPlan(
+                summary="Refresh desktop shell",
+                changes=[
+                    FileChange(
+                        file_path="frontend/src/App.tsx",
+                        action="modify",
+                        description="Update desktop shell layout",
+                        layer="frontend",
+                    ),
+                ],
+                requires_migration=False,
+                risk_level="medium",
+                reasoning="This request explicitly targets the shell",
+            ),
+            "generated_files": [
+                GeneratedFile(
+                    file_path="frontend/src/App.tsx",
+                    content="export default function App() { return null; }",
+                    action="modify",
+                    layer="frontend",
+                )
+            ],
+        }
+    )
+
+    errors = _validate_plan_contract(ctx)
+
+    assert errors == []

@@ -4,6 +4,8 @@ import asyncio
 
 from engine.context import create_context
 from engine.models.backlog import (
+    BacklogAppSpec,
+    BacklogFeatureSpec,
     BacklogItem,
     BacklogTaskPriority,
     BacklogTaskStatus,
@@ -126,6 +128,44 @@ def test_finalize_backlog_item_marks_success_done():
     assert "completed_at" in payload
 
 
+def test_ensure_app_registered_sets_frontend_entry_metadata():
+    """New app shells get a stable frontend entry derived from the app name."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _AppRegistrationReporter()
+    orchestrator.event_reporter = reporter
+
+    app_id = asyncio.run(
+        orchestrator._ensure_app_registered(
+            BacklogAppSpec(
+                name="Competitive Intelligence",
+                icon="🔎",
+                goal="Research competitor companies",
+                features=[BacklogFeatureSpec(name="Company Discovery", description="Launch search UI")],
+            )
+        )
+    )
+
+    assert app_id == "app-123"
+    assert reporter.create_app_payloads == [
+        {
+            "name": "Competitive Intelligence",
+            "icon": "🔎",
+            "goal": "Research competitor companies",
+            "status": "building",
+            "features": [
+                {
+                    "name": "Company Discovery",
+                    "description": "Launch search UI",
+                    "user_facing_description": "Launch search UI",
+                    "capability_ids": [],
+                }
+            ],
+            "capability_ids": [],
+            "metadata_json": {"frontend_entry": "competitive-intelligence"},
+        }
+    ]
+
+
 class _RecordingReporter:
     def __init__(self) -> None:
         self.updates: list[tuple[str, dict]] = []
@@ -133,6 +173,21 @@ class _RecordingReporter:
     async def update_backlog_item(self, item_id: str, payload: dict):
         self.updates.append((item_id, payload))
         return None
+
+
+class _AppRegistrationReporter:
+    def __init__(self) -> None:
+        self.create_app_payloads: list[dict] = []
+
+    async def fetch_apps(self):
+        return []
+
+    async def create_capability(self, payload: dict):
+        raise AssertionError(f"Unexpected capability creation: {payload}")
+
+    async def create_app(self, payload: dict):
+        self.create_app_payloads.append(payload)
+        return "app-123"
 
 
 def _backlog_item(

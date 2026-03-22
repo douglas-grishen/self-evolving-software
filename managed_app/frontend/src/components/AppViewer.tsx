@@ -1,3 +1,4 @@
+import { getDesktopAppComponent } from "../apps/registry";
 import { useApp, Feature, CapabilityBrief } from "../hooks/useAppsApi";
 import { StatusBadge } from "./evolution/StatusBadge";
 
@@ -45,6 +46,11 @@ export function AppViewer({ appId }: AppViewerProps) {
   if (loading) return <div className="card">Loading app...</div>;
   if (error) return <div className="card error-text">Error: {error}</div>;
   if (!app) return <div className="card">App not found.</div>;
+
+  const DesktopAppComponent = getDesktopAppComponent(app);
+  if (DesktopAppComponent) {
+    return <DesktopAppComponent app={app} />;
+  }
 
   const standaloneCaps = app.capabilities.filter(
     (cap) => !app.features.some((f) => f.capabilities.some((fc) => fc.id === cap.id))

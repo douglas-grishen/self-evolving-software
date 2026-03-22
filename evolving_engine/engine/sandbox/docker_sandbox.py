@@ -28,6 +28,26 @@ _AUTO_MANAGED_PLAN_PATHS = {
     "backend/app/models/__init__.py",
 }
 
+_DESKTOP_SHELL_PATHS = {
+    "frontend/src/App.tsx",
+    "frontend/src/App.css",
+}
+
+_DESKTOP_SHELL_KEYWORDS = (
+    "desktop",
+    "shell",
+    "launcher",
+    "menu bar",
+    "menubar",
+    "window manager",
+    "dock",
+)
+
+
+def _request_allows_desktop_shell_changes(request_text: str) -> bool:
+    text = request_text.lower()
+    return any(keyword in text for keyword in _DESKTOP_SHELL_KEYWORDS)
+
 
 def _validate_plan_contract(context: EvolutionContext) -> list[str]:
     """Reject generated output that does not satisfy the planned file contract."""
@@ -51,6 +71,17 @@ def _validate_plan_contract(context: EvolutionContext) -> list[str]:
         errors.append(
             "Generated output does not cover all planned files: "
             f"{preview}"
+        )
+
+    desktop_shell_paths = sorted(expected_paths & _DESKTOP_SHELL_PATHS)
+    if desktop_shell_paths and not _request_allows_desktop_shell_changes(
+        context.request.user_request
+    ):
+        preview = ", ".join(desktop_shell_paths)
+        errors.append(
+            "Desktop shell files are protected platform infrastructure and may not be "
+            f"changed for a product-app request: {preview}. Integrate product apps "
+            "through frontend/src/apps/ and AppViewer instead."
         )
 
     has_migration = any(

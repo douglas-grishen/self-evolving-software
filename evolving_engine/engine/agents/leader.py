@@ -64,6 +64,15 @@ IMPORTANT CONSTRAINTS:
   New migrations must extend the current head; never start a second root migration.
 - When an app currently has no features, prefer a thin vertical slice that becomes
   observable through an existing API or UI over backend-only scaffolding.
+- Treat `frontend/src/App.tsx` and `frontend/src/App.css` as protected desktop shell
+  infrastructure. Do not modify them unless the request explicitly asks to change the
+  desktop shell, launcher, menu bar, or window manager itself.
+- Product apps must be implemented under `frontend/src/apps/<AppName>/` and expose a default
+  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Those app modules are mounted inside the existing desktop window system via
+  `frontend/src/components/AppViewer.tsx`; do not replace the desktop shell.
+- When registering a desktop app, keep its frontend module key stable by using a slug derived
+  from the app name (for example `Competitive Intelligence` -> `competitive-intelligence`).
 
 Be precise. Every file that needs to change must be listed. Think step by step."""
 

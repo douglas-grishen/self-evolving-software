@@ -26,6 +26,7 @@ SELF-MODIFICATION:
 
 import asyncio
 import hashlib
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,11 @@ _MAX_CONCURRENT_EVOLUTIONS = 1
 # Proactive analysis runs at most once every 60 minutes (unless manually triggered)
 _PROACTIVE_INTERVAL_SECONDS = 60 * 60  # 60 minutes
 _CONTROL_PLANE_RETRY_SECONDS = 10
+
+
+def _frontend_entry_key(app_name: str) -> str:
+    """Generate the stable frontend module key for a desktop app."""
+    return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", app_name.strip().lower()))
 
 
 class Orchestrator:
@@ -624,6 +630,13 @@ set of tasks that can be executed across multiple autonomous runs.
 - If at least one business app exists, deepen it before inventing another app
 - Do NOT propose System Monitor, Evolution Monitor, Health Monitor, or other meta-apps
   unless the Purpose explicitly requires that domain
+- The desktop shell already exists in `frontend/src/App.tsx` and `frontend/src/App.css`.
+  Product apps must run inside that shell via `frontend/src/components/AppViewer.tsx`.
+- Frontend app slices should live under `frontend/src/apps/<AppName>/` and expose a default
+  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Use a stable slug of the desktop app name as the frontend module key, for example
+  `Competitive Intelligence` -> `competitive-intelligence`.
+- Do not replace the shell itself when planning or executing product-app work.
 - If no business app exists yet, the first actionable task must use task_type=create_app
 - task_type=create_app means: register the app shell and then execute the first code slice
 - task_type=evolve means: improve an existing app or add the next thin slice
@@ -807,6 +820,9 @@ set of tasks that can be executed across multiple autonomous runs.
                 "status": "building",
                 "features": features_payload,
                 "capability_ids": capability_ids,
+                "metadata_json": {
+                    "frontend_entry": _frontend_entry_key(app_spec.name),
+                },
             }
         )
 
