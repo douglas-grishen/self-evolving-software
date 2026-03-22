@@ -27,6 +27,7 @@ SELF-MODIFICATION:
 import asyncio
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
@@ -41,6 +42,13 @@ from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext, create_context
 from engine.deployer.git_ops import LocalDeployer
 from engine.event_reporter import EventReporter
+from engine.models.backlog import (
+    BacklogAppSpec,
+    BacklogItem,
+    BacklogPlannerResponse,
+    BacklogTaskStatus,
+    BacklogTaskType,
+)
 from engine.models.evolution import DeploymentResult, EvolutionStatus, EvolutionSource
 from engine.models.genesis import Genesis
 from engine.models.inception import InceptionRequest
@@ -141,9 +149,8 @@ class Orchestrator:
         self._last_proactive_run: float = 0.0  # epoch timestamp of last proactive analysis
         self._purpose_synced = False
 
-        # Proactive analysis cache — skip LLM call if Purpose + codebase unchanged
-        self._last_analysis_hash: str = ""
-        self._last_analysis_result: str = ""
+        # Proactive planning cache — skip re-planning if the inputs are unchanged
+        self._last_backlog_hash: str = ""
 
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
@@ -174,23 +181,22 @@ class Orchestrator:
             runtime_snapshot=runtime_snapshot,
         )
 
+        return await self._execute_context(ctx)
+
+    async def _execute_context(self, ctx: EvolutionContext) -> EvolutionContext:
+        """Execute a pre-built context through the evolution pipeline."""
         logger.info(
             "pipeline.start",
             request_id=ctx.request_id,
-            source=source.value,
-            request=user_request[:120],
-            dry_run=dry_run,
+            source=ctx.request.source.value,
+            request=ctx.request.user_request[:120],
+            dry_run=ctx.request.dry_run,
         )
 
-        # Report pipeline start to backend
         await self.event_reporter.post_event(ctx)
-
         ctx = await self._run_state_machine(ctx)
-
-        # Report pipeline completion to backend
         await self.event_reporter.post_event(ctx)
 
-        # Auto-extract a lesson if this cycle failed or had validation retries
         should_extract = ctx.status.value == "failed" or (
             ctx.status.value == "completed" and ctx.retry_count > 0
         )
@@ -498,16 +504,7 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     async def _proactive_evolution(self) -> bool:
-        """Analyze the Purpose against the current codebase and evolve proactively.
-
-        Optimizations applied:
-        1. Uses Haiku (fast model) for gap analysis — 15x cheaper than Sonnet
-        2. Limits scope to 3-5 files per cycle for higher quality
-        3. Caches analysis — skips LLM call if Purpose + codebase haven't changed
-
-        Returns True if the analysis completed (even if no evolution was needed),
-        False if there was an error.
-        """
+        """Plan or refresh the proactive backlog, then execute one task from it."""
         async with self._evolution_semaphore:
             self._last_proactive_run = time.time()
             logger.info("proactive.analyzing_purpose", purpose_version=self.purpose.version)
@@ -532,39 +529,80 @@ class Orchestrator:
                 logger.warning("proactive.apps_unavailable")
                 return False
 
-            # ── OPTIMIZATION #3: Cache — skip LLM if nothing changed ──────────
+            existing_backlog = await self.event_reporter.fetch_backlog(
+                purpose_version=self.purpose.version,
+                include_completed=True,
+            )
+            if existing_backlog is None:
+                logger.warning("proactive.backlog_unavailable")
+                return False
+
+            backlog_summary = self._format_backlog_for_prompt(existing_backlog)
             purpose_yaml = self.purpose.to_yaml_string()
-            cache_input = f"{purpose_yaml}\n---\n{codebase_summary}\n---\n{apps_summary}"
+            cache_input = (
+                f"{purpose_yaml}\n---\n{codebase_summary}\n---\n{apps_summary}\n---\n{backlog_summary}"
+            )
             current_hash = hashlib.sha256(cache_input.encode()).hexdigest()[:16]
+            backlog_items = existing_backlog
+            if current_hash != self._last_backlog_hash or not existing_backlog:
+                plan = await self._plan_proactive_backlog(
+                    codebase_summary=codebase_summary,
+                    apps_summary=apps_summary,
+                    backlog_summary=backlog_summary,
+                )
+                if plan is None:
+                    logger.warning("proactive.backlog_plan_failed")
+                    return False
 
-            if current_hash == self._last_analysis_hash and self._last_analysis_result:
-                # Nothing changed since last analysis. If last result was
-                # NO_EVOLUTION_NEEDED, skip entirely. Otherwise re-execute
-                # the cached evolution request (it may have failed last time).
-                if "NO_EVOLUTION_NEEDED" in self._last_analysis_result:
-                    logger.info(
-                        "proactive.cache_hit_skip",
-                        hash=current_hash,
-                        msg="Purpose and codebase unchanged, no evolution needed",
-                    )
-                    return True
-                else:
-                    logger.info(
-                        "proactive.cache_hit_retry",
-                        hash=current_hash,
-                        msg="Re-executing cached analysis (may have failed previously)",
-                    )
-                    analysis = self._last_analysis_result
-                    return await self._execute_proactive_analysis(analysis)
+                synced_backlog = await self.event_reporter.sync_backlog(
+                    purpose_version=self.purpose.version,
+                    items=plan.items,
+                )
+                if synced_backlog is None:
+                    logger.warning("proactive.backlog_sync_failed")
+                    return False
+                backlog_items = synced_backlog
+                self._last_backlog_hash = current_hash
+                logger.info(
+                    "proactive.backlog_synced",
+                    purpose_version=self.purpose.version,
+                    item_count=len(backlog_items),
+                    summary=plan.summary[:160],
+                )
+            else:
+                logger.info("proactive.backlog_cache_hit", hash=current_hash)
 
-            # ── OPTIMIZATION #1: Use Haiku for gap analysis ───────────────────
-            purpose_context = self.purpose.to_prompt_context()
+            next_item = self._select_next_backlog_item(backlog_items)
+            if next_item is None:
+                logger.info("proactive.backlog_complete", purpose_version=self.purpose.version)
+                return True
 
-            analysis_prompt = f"""You are the proactive evolution analyzer for a self-evolving software system.
+            logger.info(
+                "proactive.executing_backlog_item",
+                item_id=next_item.id,
+                task_key=next_item.task_key,
+                task_type=next_item.task_type.value,
+                status=next_item.status.value,
+            )
+            success = await self._execute_backlog_item(next_item)
+            if success:
+                self._last_backlog_hash = ""
+            return success
 
-Your job is to compare the system's Purpose (its specification of what it should be) against
-the current codebase, and identify the SINGLE most important gap — a feature, improvement,
-or requirement that is defined in the Purpose but NOT yet implemented in the code.
+    async def _plan_proactive_backlog(
+        self,
+        codebase_summary: str,
+        apps_summary: str,
+        backlog_summary: str,
+    ) -> BacklogPlannerResponse | None:
+        """Ask the fast model for a small persistent roadmap aligned to Purpose."""
+        purpose_context = self.purpose.to_prompt_context()
+
+        planning_prompt = f"""You are the proactive roadmap planner for a self-evolving software system.
+
+Your job is to maintain a SMALL persistent backlog for the current Purpose.
+You are not choosing a single next request anymore. You are producing an ordered
+set of tasks that can be executed across multiple autonomous runs.
 
 {purpose_context}
 
@@ -574,254 +612,274 @@ or requirement that is defined in the Purpose but NOT yet implemented in the cod
 ## Existing Apps
 {apps_summary}
 
-## Architecture: Apps, Features & Capabilities
+## Current Persisted Backlog
+{backlog_summary}
 
-The system uses a structured framework:
-- **App**: A cohesive unit with a concrete goal, displayed as a desktop icon. Users launch apps by clicking icons.
-- **Feature**: A user-facing behavior within an app (something a person can see/use).
-- **Capability**: An internal system ability that enables features or runs independently in the background.
+## Planning Rules
+- Return the FULL desired backlog for the current Purpose, not just one task
+- Keep the backlog small: 0 to 5 tasks maximum
+- Use stable snake_case task_key values when the task intent remains the same
+- Each task must be small enough for a single code-generation cycle, usually 3-5 files
+- Prefer a vertical slice that becomes visible to the user over backend-only scaffolding
+- If at least one business app exists, deepen it before inventing another app
+- Do NOT propose System Monitor, Evolution Monitor, Health Monitor, or other meta-apps
+  unless the Purpose explicitly requires that domain
+- If no business app exists yet, the first actionable task must use task_type=create_app
+- task_type=create_app means: register the app shell and then execute the first code slice
+- task_type=evolve means: improve an existing app or add the next thin slice
+- Mark status=done only when the codebase/apps clearly satisfy the task already
+- Mark status=blocked only when a dependency or repeated failure truly prevents progress
+- When a task is blocked, set blocked_reason and shrink later tasks accordingly
+- Include acceptance criteria that can be validated after the cycle
+- Use depends_on with task_key references when a task must wait on another one
 
-When you identify a gap that warrants a NEW app (a distinct user-facing experience), you should
-create the app with its features and capabilities using the CREATE_APP format below.
+## App Structure Reminder
+- App: desktop-visible product surface with a concrete goal
+- Feature: user-visible behavior inside an app
+- Capability: internal system ability that supports features
 
-When the gap is an improvement to existing code or infrastructure (not a new app), use EVOLVE.
-
-## Existing Admin UI
-
-The framework already includes a built-in operational admin UI for health, timeline,
-purpose, settings, and evolution monitoring. Treat that as existing platform
-infrastructure, not as a missing product app.
-
-## IMPORTANT CONSTRAINTS
-- Focus on ONE small, incremental change (max 3-5 files)
-- Do NOT try to build an entire app in one shot — start with the smallest viable piece
-- Prefer backend-first changes (API endpoints, models) over full-stack features
-- Each evolution_request should be achievable in a single code generation pass
-- If at least one business app already exists, prefer deepening that app before creating a new one
-- Do NOT propose System Monitor, Evolution Monitor, Health Monitor, or similar meta-apps
-  unless the Purpose explicitly names that as the product domain
-
-## CRITICAL RULE: When No Apps Exist
-If the Existing Apps section shows "(No apps created yet)", you MUST use CREATE_APP.
-Do NOT use EVOLVE to add backend services or infrastructure when there are no apps yet —
-that produces orphaned code that has no user-facing purpose. Always start with CREATE_APP
-to register the concept first, then use EVOLVE in subsequent cycles to build its internals.
-
-## Instructions
-1. Carefully compare each Purpose requirement against the codebase and existing apps
-2. Identify requirements that are NOT yet implemented or are only partially implemented
-3. Pick the SINGLE most impactful gap to close next
-4. If ALL requirements appear to be implemented, respond with exactly: NO_EVOLUTION_NEEDED
-
-## Response Format
-
-If a new App should be created:
-CREATE_APP:
-name: <App name>
-icon: <single emoji>
-goal: <concrete objective>
-features:
-  - name: <feature name>
-    description: <what the user experiences>
-capabilities:
-  - name: <capability name>
-    description: <internal system ability>
-    is_background: <true/false>
-evolution_request: <Describe ONLY the first 3-5 files needed to start this app. Be specific about file paths and what each file should contain. Do NOT describe the entire app — just the foundation.>
-
-If existing code needs improvement (not a new app):
-EVOLVE: <A clear, actionable description of what to build/implement to close the gap.
-Include which Purpose requirement it fulfills and what specific code changes are needed.
-Limit to max 3-5 files.>
-
-If no evolution is needed:
-NO_EVOLUTION_NEEDED
+## Response Guidance
+- If the Purpose is fully satisfied, return an empty items list
+- For create_app tasks, app_spec is required
+- For evolve tasks, app_spec must be null
+- execution_request must describe ONLY the next small slice to build
 """
 
-            try:
-                # Use fast model (Haiku) for analysis — 15x cheaper
-                response = await self.provider.generate(
-                    system_prompt="You are a senior software architect analyzing a self-evolving system.",
-                    user_prompt=analysis_prompt,
-                    max_tokens=2048,
-                    model_override="fast",
-                )
-                analysis = response.strip()
-            except Exception as exc:
-                logger.warning("proactive.llm_error", error=str(exc))
-                return False
+        try:
+            return await self.provider.generate_structured(
+                system_prompt=(
+                    "You are a senior software architect maintaining a persistent, "
+                    "incremental backlog for an autonomous software system."
+                ),
+                user_prompt=planning_prompt,
+                response_model=BacklogPlannerResponse,
+                max_tokens=2500,
+                model_override="fast",
+            )
+        except Exception as exc:
+            logger.warning("proactive.backlog_planner_error", error=str(exc))
+            return None
 
-            # Cache the result
-            self._last_analysis_hash = current_hash
-            self._last_analysis_result = analysis
+    def _format_backlog_for_prompt(self, items: list[BacklogItem]) -> str:
+        """Render backlog items into a compact planner-friendly summary."""
+        if not items:
+            return "(No persisted backlog yet)"
 
-            return await self._execute_proactive_analysis(analysis)
+        ordered = sorted(items, key=lambda item: (item.sequence, item.created_at or datetime.min))
+        lines: list[str] = []
+        for item in ordered:
+            deps = ", ".join(item.depends_on) if item.depends_on else "none"
+            lines.append(
+                f"- [{item.status.value}] {item.task_key} (seq={item.sequence}, priority={item.priority.value}, "
+                f"attempts={item.attempt_count}, deps={deps}) :: {item.title}"
+            )
+            if item.description:
+                lines.append(f"  desc: {item.description[:220]}")
+            if item.last_error:
+                lines.append(f"  last_error: {item.last_error[:220]}")
+            if item.blocked_reason:
+                lines.append(f"  blocked_reason: {item.blocked_reason[:220]}")
+        return "\n".join(lines)
 
-    async def _execute_proactive_analysis(self, analysis: str) -> bool:
-        """Execute the result of a proactive analysis (either fresh or cached)."""
-        if "NO_EVOLUTION_NEEDED" in analysis:
-            logger.info("proactive.all_requirements_met")
-            return True
+    def _select_next_backlog_item(self, items: list[BacklogItem]) -> BacklogItem | None:
+        """Pick the next actionable backlog item, preferring resumed work."""
+        if not items:
+            return None
 
-        # Handle CREATE_APP response — register the app first, then evolve
-        if analysis.startswith("CREATE_APP:"):
-            await self._handle_create_app(analysis)
-            return True
+        ordered = sorted(items, key=lambda item: (item.sequence, item.created_at or datetime.min))
+        completed_keys = {
+            item.task_key
+            for item in ordered
+            if item.status == BacklogTaskStatus.DONE
+        }
 
-        # Extract the evolution request
-        if analysis.startswith("EVOLVE:"):
-            request_text = analysis[len("EVOLVE:"):].strip()
-        else:
-            request_text = analysis
+        for preferred_status in (BacklogTaskStatus.IN_PROGRESS, BacklogTaskStatus.PENDING):
+            for item in ordered:
+                if item.status != preferred_status:
+                    continue
+                if all(dep in completed_keys for dep in item.depends_on):
+                    return item
+        return None
 
-        logger.info(
-            "proactive.evolution_needed",
-            request_preview=request_text[:150],
-        )
-
-        # Bootstrap guard: if no apps exist yet, auto-create a stub app from
-        # the Purpose before running EVOLVE. This handles the case where the
-        # LLM ignores the CRITICAL RULE and returns EVOLVE instead of CREATE_APP.
-        app_id: str | None = None
-        app_name: str = ""
-        existing_apps = await self.event_reporter.fetch_apps()
-        if existing_apps == [] and self.purpose:
-            try:
-                app_name = self.purpose.identity.name.title()
-                app_goal = self.purpose.identity.description
-                app_payload = {
-                    "name": app_name,
-                    "icon": "🔍",
-                    "goal": app_goal,
-                    "status": "building",
-                    "features": [],
-                    "capability_ids": [],
-                }
-                app_id = await self.event_reporter.create_app(app_payload)
-                if app_id:
-                    logger.info("proactive.auto_bootstrapped_app", app_id=app_id, name=app_name)
-                    # Clear cache so next cycle sees the new app
-                    self._last_analysis_hash = ""
-                    self._last_analysis_result = ""
-            except Exception as exc:
-                logger.warning("proactive.auto_bootstrap_error", error=str(exc))
-
-        # Execute the evolution pipeline (Generator still uses Sonnet)
-        ctx = await self.run(
-            user_request=f"[Proactive — Purpose-driven] {request_text}",
+    async def _execute_backlog_item(self, item: BacklogItem) -> bool:
+        """Execute one persisted backlog item and update its state."""
+        request_text = self._build_backlog_request(item)
+        ctx = create_context(
+            request_text,
             dry_run=False,
             source=EvolutionSource.MONITOR,
         )
 
-        # Clear cache on successful evolution (codebase changed)
-        if ctx.status == EvolutionStatus.COMPLETED:
-            self._last_analysis_hash = ""
-            self._last_analysis_result = ""
-            # Mark auto-bootstrapped app as active
-            if app_id:
-                await self.event_reporter.update_app(app_id, {"status": "active"})
-                logger.info("proactive.app_activated", app_id=app_id, name=app_name)
+        now = datetime.now(timezone.utc).isoformat()
+        await self.event_reporter.update_backlog_item(
+            item.id,
+            {
+                "status": BacklogTaskStatus.IN_PROGRESS.value,
+                "last_request_id": ctx.request_id,
+                "attempt_count": item.attempt_count + 1,
+                "last_error": None,
+                "blocked_reason": None,
+                "started_at": now,
+                "completed_at": None,
+            },
+        )
 
+        created_app_id: str | None = None
+        if item.task_type == BacklogTaskType.CREATE_APP:
+            if item.app_spec is None:
+                await self._mark_backlog_item_failed(
+                    item,
+                    request_id=ctx.request_id,
+                    error_message="Planner returned create_app without app_spec",
+                )
+                return False
+            created_app_id = await self._ensure_app_registered(item.app_spec)
+            if created_app_id is None:
+                await self._mark_backlog_item_failed(
+                    item,
+                    request_id=ctx.request_id,
+                    error_message=f"Failed to register app '{item.app_spec.name}' before evolution",
+                )
+                return False
+
+        ctx = await self._execute_context(ctx)
+
+        if created_app_id and ctx.status == EvolutionStatus.COMPLETED:
+            await self.event_reporter.update_app(created_app_id, {"status": "active"})
+
+        await self._finalize_backlog_item(item, ctx)
         logger.info(
-            "proactive.evolution_complete",
-            status=ctx.status.value,
+            "proactive.backlog_item_complete",
+            item_id=item.id,
+            task_key=item.task_key,
             request_id=ctx.request_id,
+            status=ctx.status.value,
         )
         return ctx.status == EvolutionStatus.COMPLETED
 
-    async def _handle_create_app(self, analysis: str) -> None:
-        """Parse CREATE_APP response from LLM and register it via the backend API.
-
-        Then runs the evolution pipeline to build the app's first feature.
-        """
-        import yaml  # local import to avoid top-level dependency in this module
-
-        try:
-            # Extract YAML-like block after CREATE_APP:
-            yaml_text = analysis[len("CREATE_APP:"):].strip()
-
-            # Extract the evolution_request from the end (not valid YAML key)
-            evolution_request = ""
-            if "evolution_request:" in yaml_text:
-                parts = yaml_text.split("evolution_request:", 1)
-                yaml_text = parts[0]
-                evolution_request = parts[1].strip()
-
-            # Parse the YAML-like structure
-            app_data = yaml.safe_load(yaml_text) or {}
-
-            app_name = app_data.get("name", "Unnamed App")
-            app_icon = app_data.get("icon", "\U0001f4e6")
-            app_goal = app_data.get("goal", "")
-            features_raw = app_data.get("features", [])
-            capabilities_raw = app_data.get("capabilities", [])
-
-            logger.info(
-                "proactive.create_app",
-                name=app_name,
-                features=len(features_raw),
-                capabilities=len(capabilities_raw),
+    def _build_backlog_request(self, item: BacklogItem) -> str:
+        """Convert a backlog item into a concrete evolution request."""
+        acceptance = ""
+        if item.acceptance_criteria:
+            acceptance = "\nAcceptance criteria:\n" + "\n".join(
+                f"- {criterion}" for criterion in item.acceptance_criteria
             )
+        return (
+            f"[Proactive Task: {item.title}] {item.execution_request.strip()}"
+            f"{acceptance}"
+        ).strip()
 
-            # Create capabilities first
-            cap_ids: list[str] = []
-            for cap_data in capabilities_raw:
-                cap_payload = {
-                    "name": cap_data.get("name", ""),
-                    "description": cap_data.get("description", ""),
-                    "is_background": cap_data.get("is_background", False),
+    async def _ensure_app_registered(self, app_spec: BacklogAppSpec) -> str | None:
+        """Create the app shell if needed and return its app ID."""
+        existing_apps = await self.event_reporter.fetch_apps()
+        if existing_apps:
+            for app in existing_apps:
+                if app.get("name", "").strip().lower() == app_spec.name.strip().lower():
+                    return app.get("id")
+
+        capability_ids: list[str] = []
+        for capability in app_spec.capabilities:
+            cap_id = await self.event_reporter.create_capability(
+                {
+                    "name": capability.name,
+                    "description": capability.description,
+                    "is_background": capability.is_background,
                 }
-                cap_id = await self.event_reporter.create_capability(cap_payload)
-                if cap_id:
-                    cap_ids.append(cap_id)
+            )
+            if cap_id:
+                capability_ids.append(cap_id)
 
-            # Build features list with capability links
-            features_payload = []
-            for feat_data in features_raw:
-                features_payload.append({
-                    "name": feat_data.get("name", ""),
-                    "description": feat_data.get("description", ""),
-                    "user_facing_description": feat_data.get("description", ""),
-                    "capability_ids": cap_ids,  # link all caps to all features for now
-                })
+        features_payload = [
+            {
+                "name": feature.name,
+                "description": feature.description,
+                "user_facing_description": feature.description,
+                "capability_ids": capability_ids,
+            }
+            for feature in app_spec.features
+        ]
 
-            # Create the app
-            app_payload = {
-                "name": app_name,
-                "icon": app_icon,
-                "goal": app_goal,
+        return await self.event_reporter.create_app(
+            {
+                "name": app_spec.name,
+                "icon": app_spec.icon,
+                "goal": app_spec.goal,
                 "status": "building",
                 "features": features_payload,
-                "capability_ids": cap_ids,
+                "capability_ids": capability_ids,
             }
-            app_id = await self.event_reporter.create_app(app_payload)
+        )
 
-            if app_id:
-                logger.info("proactive.app_created", app_id=app_id, name=app_name)
-            else:
-                logger.warning("proactive.app_create_failed", name=app_name)
+    async def _mark_backlog_item_failed(
+        self,
+        item: BacklogItem,
+        request_id: str,
+        error_message: str,
+    ) -> None:
+        """Persist a failed backlog attempt that never reached the pipeline."""
+        attempt_count = item.attempt_count + 1
+        next_status = (
+            BacklogTaskStatus.BLOCKED
+            if attempt_count >= 3
+            else BacklogTaskStatus.PENDING
+        )
+        await self.event_reporter.update_backlog_item(
+            item.id,
+            {
+                "status": next_status.value,
+                "last_request_id": request_id,
+                "attempt_count": attempt_count,
+                "last_error": error_message[:2000],
+                "blocked_reason": error_message[:500]
+                if next_status == BacklogTaskStatus.BLOCKED
+                else None,
+            },
+        )
 
-            # Now run the evolution to actually build the app
-            if evolution_request:
-                ctx = await self.run(
-                    user_request=f"[Proactive — App: {app_name}] {evolution_request}",
-                    dry_run=False,
-                    source=EvolutionSource.MONITOR,
-                )
-                logger.info(
-                    "proactive.app_evolution_complete",
-                    app_name=app_name,
-                    status=ctx.status.value,
-                    request_id=ctx.request_id,
-                )
+    async def _finalize_backlog_item(self, item: BacklogItem, ctx: EvolutionContext) -> None:
+        """Persist the outcome of a backlog task after the pipeline finishes."""
+        if ctx.status == EvolutionStatus.COMPLETED:
+            await self.event_reporter.update_backlog_item(
+                item.id,
+                {
+                    "status": BacklogTaskStatus.DONE.value,
+                    "last_request_id": ctx.request_id,
+                    "last_error": None,
+                    "blocked_reason": None,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return
 
-                # Mark app as active once the first evolution succeeds
-                if app_id and ctx.status == EvolutionStatus.COMPLETED:
-                    await self.event_reporter.update_app(app_id, {"status": "active"})
-                    logger.info("proactive.app_activated", app_id=app_id, name=app_name)
+        error_message = self._summarize_backlog_failure(ctx)
+        attempt_count = item.attempt_count + 1
+        next_status = (
+            BacklogTaskStatus.BLOCKED
+            if attempt_count >= 3
+            else BacklogTaskStatus.PENDING
+        )
+        await self.event_reporter.update_backlog_item(
+            item.id,
+            {
+                "status": next_status.value,
+                "last_request_id": ctx.request_id,
+                "last_error": error_message[:2000],
+                "blocked_reason": error_message[:500]
+                if next_status == BacklogTaskStatus.BLOCKED
+                else None,
+            },
+        )
 
-        except Exception as exc:
-            logger.warning("proactive.create_app_error", error=str(exc))
+    def _summarize_backlog_failure(self, ctx: EvolutionContext) -> str:
+        """Extract a compact failure summary for backlog persistence."""
+        parts: list[str] = []
+        if ctx.error:
+            parts.append(ctx.error)
+        if ctx.validation_result and ctx.validation_result.errors:
+            parts.extend(ctx.validation_result.errors[:5])
+        if not parts:
+            return "Evolution failed without a structured error message"
+        return "\n".join(parts)
 
     async def _fetch_apps_summary(self) -> tuple[str, bool, int]:
         """Fetch the list of existing apps from the backend for the proactive analyzer."""
@@ -929,6 +987,7 @@ NO_EVOLUTION_NEEDED
                 # Update in-memory purpose and propagate to Leader agent
                 self.purpose = new_purpose
                 self.leader.purpose = new_purpose
+                self._last_backlog_hash = ""
 
                 # Store new purpose version in backend DB
                 await self.event_reporter.post_purpose(new_purpose, inception_id=inception.id)

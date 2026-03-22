@@ -20,6 +20,7 @@ import httpx
 import structlog
 
 from engine.context import EvolutionContext
+from engine.models.backlog import BacklogItem, BacklogPlanItem
 from engine.models.inception import InceptionRequest, InceptionResult, InceptionSource
 from engine.models.memory import EngineMemory
 from engine.models.purpose import Purpose
@@ -207,6 +208,66 @@ class EventReporter:
             "inception_id": inception_id,
         }
         return await self._post(f"{self._evolution_url}/purpose", payload, retries=8)
+
+    # ------------------------------------------------------------------
+    # Proactive Backlog
+    # ------------------------------------------------------------------
+
+    async def fetch_backlog(
+        self,
+        purpose_version: int | None = None,
+        include_completed: bool = True,
+    ) -> list[BacklogItem] | None:
+        """Fetch persisted proactive backlog items from the backend."""
+        params: dict[str, Any] = {"include_completed": str(include_completed).lower()}
+        if purpose_version is not None:
+            params["purpose_version"] = purpose_version
+
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self._evolution_url}/backlog", params=params)
+                resp.raise_for_status()
+                data = resp.json()
+            return [BacklogItem.model_validate(item) for item in data]
+        except Exception as exc:
+            logger.debug("event_reporter.fetch_backlog_error", error=str(exc))
+            return None
+
+    async def sync_backlog(
+        self,
+        purpose_version: int,
+        items: list[BacklogPlanItem],
+    ) -> list[BacklogItem] | None:
+        """Persist the current proactive roadmap for the active Purpose version."""
+        payload = {
+            "purpose_version": purpose_version,
+            "items": [item.model_dump(mode="json") for item in items],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(f"{self._evolution_url}/backlog/sync", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            return [BacklogItem.model_validate(item) for item in data]
+        except Exception as exc:
+            logger.debug("event_reporter.sync_backlog_error", error=str(exc))
+            return None
+
+    async def update_backlog_item(self, item_id: str, payload: dict[str, Any]) -> BacklogItem | None:
+        """Update runtime execution state for a proactive backlog item."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.put(f"{self._evolution_url}/backlog/{item_id}", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            return BacklogItem.model_validate(data)
+        except Exception as exc:
+            logger.debug(
+                "event_reporter.update_backlog_item_error",
+                item_id=item_id,
+                error=str(exc),
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Apps, Features & Capabilities

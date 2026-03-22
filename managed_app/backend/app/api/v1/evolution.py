@@ -6,6 +6,9 @@ Engine-facing endpoints (control-plane):
   GET  /inceptions?status=  — engine polls for pending inceptions
   PUT  /inceptions/{id}     — engine marks inception as applied/rejected
   POST /purpose             — engine stores a purpose version
+  GET  /backlog             — engine fetches the persisted proactive backlog
+  POST /backlog/sync        — engine replaces or updates the proactive backlog
+  PUT  /backlog/{id}        — engine updates task execution state
 
 UI-facing endpoints (managed-system):
   GET  /events              — evolution history (paginated)
@@ -14,6 +17,7 @@ UI-facing endpoints (managed-system):
   POST /inceptions          — submit a new inception
   GET  /purpose             — current purpose
   GET  /purpose/history     — all purpose versions
+  GET  /backlog             — proactive roadmap with task status
   GET  /status              — dashboard summary
 """
 
@@ -27,8 +31,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_admin
 from app.database import get_db
 from app.models.admin import AdminUser
-from app.models.evolution import EvolutionEventRecord, InceptionRecord, PurposeRecord
+from app.models.evolution import (
+    EvolutionBacklogItemRecord,
+    EvolutionEventRecord,
+    InceptionRecord,
+    PurposeRecord,
+)
 from app.schemas.evolution import (
+    BacklogItemResponse,
+    BacklogItemUpdate,
+    BacklogSyncRequest,
     DashboardStatusResponse,
     EvolutionEventCreate,
     EvolutionEventResponse,
@@ -247,6 +259,134 @@ async def list_purpose_history(
         select(PurposeRecord).order_by(desc(PurposeRecord.version))
     )
     return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Backlog
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backlog", response_model=List[BacklogItemResponse])
+async def list_backlog_items(
+    purpose_version: Optional[int] = Query(default=None),
+    include_completed: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+) -> List[EvolutionBacklogItemRecord]:
+    """List proactive backlog items, ordered by plan sequence."""
+    query = select(EvolutionBacklogItemRecord).order_by(
+        EvolutionBacklogItemRecord.purpose_version.desc(),
+        EvolutionBacklogItemRecord.sequence.asc(),
+        EvolutionBacklogItemRecord.created_at.asc(),
+    )
+    if purpose_version is not None:
+        query = query.where(EvolutionBacklogItemRecord.purpose_version == purpose_version)
+    if not include_completed:
+        query = query.where(
+            EvolutionBacklogItemRecord.status.notin_(["done", "abandoned"])
+        )
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+@router.post("/backlog/sync", response_model=List[BacklogItemResponse])
+async def sync_backlog(
+    payload: BacklogSyncRequest,
+    db: AsyncSession = Depends(get_db),
+) -> List[EvolutionBacklogItemRecord]:
+    """Replace or update the proactive backlog for a Purpose version.
+
+    The planner sends the full desired roadmap for the active Purpose version.
+    Existing non-terminal items omitted from the new plan are marked abandoned.
+    Terminal items stay untouched so progress survives replans.
+    """
+    result = await db.execute(
+        select(EvolutionBacklogItemRecord).where(
+            EvolutionBacklogItemRecord.purpose_version == payload.purpose_version
+        )
+    )
+    existing_records = list(result.scalars().all())
+    existing_by_key = {record.task_key: record for record in existing_records}
+    seen_keys: set[str] = set()
+
+    for item in payload.items:
+        seen_keys.add(item.task_key)
+        record = existing_by_key.get(item.task_key)
+        item_data = item.model_dump()
+        app_spec = item_data.pop("app_spec", None)
+        if app_spec is not None:
+            item_data["app_spec"] = app_spec
+
+        if record:
+            for field, value in item_data.items():
+                if field == "status" and record.status in {"done", "abandoned"}:
+                    continue
+                if field == "status" and record.status == "in_progress" and value == "pending":
+                    continue
+                setattr(record, field, value)
+            record.blocked_reason = item.blocked_reason
+            if record.status in {"done", "abandoned"} and not record.completed_at:
+                record.completed_at = datetime.now(timezone.utc)
+            continue
+
+        record = EvolutionBacklogItemRecord(
+            purpose_version=payload.purpose_version,
+            **item_data,
+        )
+        if record.status in {"done", "abandoned"}:
+            record.completed_at = datetime.now(timezone.utc)
+        db.add(record)
+
+    for record in existing_records:
+        if record.task_key in seen_keys:
+            continue
+        if record.status in {"done", "abandoned"}:
+            continue
+        record.status = "abandoned"
+        record.blocked_reason = "Removed from replanned backlog"
+        record.completed_at = record.completed_at or datetime.now(timezone.utc)
+
+    await db.flush()
+
+    refreshed = await db.execute(
+        select(EvolutionBacklogItemRecord)
+        .where(EvolutionBacklogItemRecord.purpose_version == payload.purpose_version)
+        .order_by(
+            EvolutionBacklogItemRecord.sequence.asc(),
+            EvolutionBacklogItemRecord.created_at.asc(),
+        )
+    )
+    return list(refreshed.scalars().all())
+
+
+@router.put("/backlog/{item_id}", response_model=BacklogItemResponse)
+async def update_backlog_item(
+    item_id: str,
+    payload: BacklogItemUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> EvolutionBacklogItemRecord:
+    """Update execution state for a proactive backlog item."""
+    result = await db.execute(
+        select(EvolutionBacklogItemRecord).where(EvolutionBacklogItemRecord.id == item_id)
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Backlog item not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    app_spec = update_data.pop("app_spec", None)
+    if app_spec is not None:
+        update_data["app_spec"] = app_spec
+
+    for field, value in update_data.items():
+        setattr(record, field, value)
+
+    if record.status in {"done", "abandoned"} and not record.completed_at:
+        record.completed_at = datetime.now(timezone.utc)
+    if "completed_at" not in update_data and record.status not in {"done", "abandoned"}:
+        record.completed_at = None
+
+    await db.flush()
+    return record
 
 
 # ---------------------------------------------------------------------------

@@ -84,3 +84,48 @@ class PurposeRecord(Base):
     inception_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("inceptions.id"), nullable=True
     )
+
+
+class EvolutionBacklogItemRecord(Base):
+    """A persisted proactive roadmap item that survives across engine runs."""
+
+    __tablename__ = "evolution_backlog_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    purpose_version: Mapped[int] = mapped_column(Integer, index=True)
+    task_key: Mapped[str] = mapped_column(String(120))
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    priority: Mapped[str] = mapped_column(String(10), default="normal", index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    task_type: Mapped[str] = mapped_column(String(20), default="evolve")
+    execution_request: Mapped[str] = mapped_column(Text, default="")
+    acceptance_criteria: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    depends_on: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    app_spec: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="planner")
+    last_request_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    blocked_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ux_evolution_backlog_items_purpose_task_key",
+            "purpose_version",
+            "task_key",
+            unique=True,
+        ),
+        Index(
+            "ix_evolution_backlog_items_purpose_sequence",
+            "purpose_version",
+            "sequence",
+        ),
+    )

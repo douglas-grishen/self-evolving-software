@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +112,89 @@ class PurposeResponse(BaseModel):
     content_yaml: str
     created_at: datetime
     inception_id: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Backlog
+# ---------------------------------------------------------------------------
+
+
+class BacklogAppFeatureSpec(BaseModel):
+    name: str
+    description: str = ""
+
+
+class BacklogAppCapabilitySpec(BaseModel):
+    name: str
+    description: str = ""
+    is_background: bool = False
+
+
+class BacklogAppSpec(BaseModel):
+    name: str
+    icon: str = ""
+    goal: str = ""
+    features: List[BacklogAppFeatureSpec] = Field(default_factory=list)
+    capabilities: List[BacklogAppCapabilitySpec] = Field(default_factory=list)
+
+
+class BacklogItemBase(BaseModel):
+    task_key: str
+    title: str
+    description: str = ""
+    status: str = "pending"
+    priority: str = "normal"
+    sequence: int = 0
+    task_type: str = "evolve"
+    execution_request: str = ""
+    acceptance_criteria: List[str] = Field(default_factory=list)
+    depends_on: List[str] = Field(default_factory=list)
+    app_spec: Optional[BacklogAppSpec] = None
+    source: str = "planner"
+    blocked_reason: Optional[str] = None
+
+
+class BacklogItemSync(BacklogItemBase):
+    pass
+
+
+class BacklogSyncRequest(BaseModel):
+    purpose_version: int
+    items: List[BacklogItemSync]
+
+
+class BacklogItemUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    sequence: Optional[int] = None
+    task_type: Optional[str] = None
+    execution_request: Optional[str] = None
+    acceptance_criteria: Optional[List[str]] = None
+    depends_on: Optional[List[str]] = None
+    app_spec: Optional[BacklogAppSpec] = None
+    source: Optional[str] = None
+    last_request_id: Optional[str] = None
+    attempt_count: Optional[int] = None
+    last_error: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class BacklogItemResponse(BacklogItemBase):
+    id: str
+    purpose_version: int
+    last_request_id: Optional[str] = None
+    attempt_count: int = 0
+    last_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
