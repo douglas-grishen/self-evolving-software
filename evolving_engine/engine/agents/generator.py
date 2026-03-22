@@ -53,11 +53,14 @@ from app.models.evolution import EvolutionEventRecord, InceptionRecord, PurposeR
 from app.models.admin import AdminUser
 from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 
+# New model modules can be imported directly after you create them
+# Example: from app.models.company import Company
+
 # New router files are auto-discovered — just define router = APIRouter(...)
 # Do NOT touch app/api/v1/__init__.py
 ```
 
-⚠️  NEVER use: `from app.core.*`, `from app.db.*`, `from app.models.company import Company`
+⚠️  NEVER use: `from app.core.*` or `from app.db.*`
     — these modules DO NOT EXIST in this codebase.
 ⚠️  NEVER import `AsyncSessionLocal` from app.database — it does not exist. Use `get_db`.
 ⚠️  New models must inherit from `Base` imported from `app.models.base`, NOT `app.database`.
@@ -71,9 +74,6 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - Generate working, production-quality code
 
 ## FORBIDDEN Paths — NEVER generate files at these paths
-⛔ `backend/alembic/versions/` — NEVER create migration files. Schema changes are managed
-   by the framework. If the plan requires a new DB table, add the SQLAlchemy model only;
-   do NOT generate an alembic migration file.
 ⛔ `backend/app/core/` — this directory does not exist in this codebase.
 ⛔ `backend/app/db/` — this directory does not exist in this codebase.
 ⛔ `backend/app/api/deps.py` — auth deps live in `app/auth.py`, not here.
@@ -84,6 +84,15 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 ⛔ `backend/app/config.py` — core application settings; modifying this breaks Alembic and the
    entire backend startup. Never overwrite it.
 ⛔ `backend/alembic/env.py` — Alembic environment config; never overwrite it.
+
+## Database migrations
+- If `requires_migration` is true in the plan, you MUST generate exactly one Alembic
+  revision file under `backend/alembic/versions/`.
+- Use a concrete filename from the plan, and include both `upgrade()` and `downgrade()`.
+- Keep migrations backwards-compatible and deterministic. Prefer `op.create_table`,
+  `op.add_column`, `op.create_index`, etc.
+- Do not rely on editing `backend/app/models/__init__.py` or `backend/alembic/env.py`.
+- A schema-changing plan without its migration will be rejected by validation.
 
 Respond with a JSON array of file objects."""
 
@@ -204,7 +213,6 @@ class CodeGeneratorAgent(BaseAgent):
 
         # Paths the engine must never write — these would break the managed app
         FORBIDDEN_PREFIXES = (
-            "backend/alembic/versions/",   # rogue migrations break alembic
             "backend/app/core/",           # directory does not exist
             "backend/app/db/",             # directory does not exist
         )

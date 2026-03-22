@@ -11,10 +11,23 @@ from engine.providers.base import BaseLLMProvider
 class MockProvider(BaseLLMProvider):
     """Mock LLM provider that returns a predefined plan."""
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+        **_: object,
+    ) -> str:
         return '{"summary": "Add products CRUD", "changes": [], "risk_level": "low"}'
 
-    async def generate_structured(self, system_prompt, user_prompt, response_model, max_tokens=4096):
+    async def generate_structured(
+        self,
+        system_prompt,
+        user_prompt,
+        response_model,
+        max_tokens=4096,
+        **_: object,
+    ):
         if response_model is EvolutionPlan:
             return EvolutionPlan(
                 summary="Add products CRUD",

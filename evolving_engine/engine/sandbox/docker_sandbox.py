@@ -23,6 +23,48 @@ from engine.sandbox.base import BaseSandbox
 
 logger = structlog.get_logger()
 
+_AUTO_MANAGED_PLAN_PATHS = {
+    "backend/app/api/v1/__init__.py",
+    "backend/app/models/__init__.py",
+}
+
+
+def _validate_plan_contract(context: EvolutionContext) -> list[str]:
+    """Reject generated output that does not satisfy the planned file contract."""
+    if not context.plan:
+        return []
+
+    generated_paths = {
+        gen_file.file_path.lstrip("/")
+        for gen_file in context.generated_files
+    }
+    expected_paths = {
+        change.file_path.lstrip("/")
+        for change in context.plan.changes
+        if change.file_path not in _AUTO_MANAGED_PLAN_PATHS
+    }
+    errors: list[str] = []
+
+    missing_paths = sorted(expected_paths - generated_paths)
+    if missing_paths:
+        preview = ", ".join(missing_paths[:5])
+        errors.append(
+            "Generated output does not cover all planned files: "
+            f"{preview}"
+        )
+
+    has_migration = any(
+        path.startswith("backend/alembic/versions/")
+        for path in generated_paths
+    )
+    if context.plan.requires_migration and not has_migration:
+        errors.append(
+            "Plan requires a schema migration but no Alembic revision was generated "
+            "under backend/alembic/versions/."
+        )
+
+    return errors
+
 
 class DockerSandbox(BaseSandbox):
     """Sandbox that uses Docker to test generated code in isolation."""
@@ -63,6 +105,13 @@ class DockerSandbox(BaseSandbox):
                 elif src.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+        contract_errors = _validate_plan_contract(context)
+        if contract_errors:
+            errors.extend(contract_errors)
+            suggestions.append(
+                "Ensure the generator emits every planned file, including required Alembic migrations."
+            )
 
         # Stage 1: Static analysis
         static_ok, static_errors = await self._run_static_analysis(sandbox_app)

@@ -53,6 +53,15 @@ IMPORTANT CONSTRAINTS:
   files first. The next evolution cycle will handle the rest.
 - Prefer small, incremental changes that can be validated independently.
 - Each file change should be self-contained and not break existing functionality.
+- New API routers placed in `backend/app/api/v1/` are auto-registered by the framework.
+  Do not plan changes to `backend/app/api/v1/__init__.py`.
+- Do not plan changes to `backend/app/models/__init__.py`; new models should live in
+  their own module files and be imported directly where used.
+- If the plan adds or changes persisted schema (tables, columns, indexes, foreign keys),
+  include exactly one Alembic migration under `backend/alembic/versions/` and set
+  `requires_migration=true`.
+- When an app currently has no features, prefer a thin vertical slice that becomes
+  observable through an existing API or UI over backend-only scaffolding.
 
 Be precise. Every file that needs to change must be listed. Think step by step."""
 
