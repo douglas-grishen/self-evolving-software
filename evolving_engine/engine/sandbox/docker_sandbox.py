@@ -125,9 +125,19 @@ class DockerSandbox(BaseSandbox):
             errors.extend(build_errors)
             suggestions.append("Ensure Dockerfiles build without errors")
 
+        # Stage 2.25: Alembic head check for schema-changing plans
+        alembic_ok = True
+        if build_ok:
+            alembic_ok, alembic_errors = await self._run_alembic_head_check(context)
+            if not alembic_ok:
+                errors.extend(alembic_errors)
+                suggestions.append(
+                    "Alembic migrations must form a single linear head and extend the current revision chain."
+                )
+
         # Stage 2.5: Backend startup smoke test
         smoke_ok = False
-        if build_ok:
+        if build_ok and alembic_ok:
             smoke_ok, smoke_errors = await self._run_backend_import_smoke_test()
             if not smoke_ok:
                 errors.extend(smoke_errors)
@@ -147,6 +157,8 @@ class DockerSandbox(BaseSandbox):
             risk_score += 0.2
         if not build_ok:
             risk_score += 0.5
+        elif not alembic_ok:
+            risk_score += 0.5
         elif not smoke_ok:
             risk_score += 0.5
         if not tests_ok:
@@ -158,7 +170,7 @@ class DockerSandbox(BaseSandbox):
         # This is intentional — the managed app often has no test files yet,
         # and blocking on "no tests collected" prevents any evolution.
         return ValidationResult(
-            passed=static_ok and build_ok and smoke_ok,
+            passed=static_ok and build_ok and alembic_ok and smoke_ok,
             risk_score=risk_score,
             static_analysis_passed=static_ok,
             build_passed=build_ok,
@@ -319,6 +331,51 @@ class DockerSandbox(BaseSandbox):
             errors.append("Backend startup smoke image not found")
         except Exception as exc:
             errors.append(f"Backend startup smoke error: {exc}")
+
+        return len(errors) == 0, errors
+
+    async def _run_alembic_head_check(self, context: EvolutionContext) -> tuple[bool, list[str]]:
+        """Reject schema changes that create multiple Alembic heads."""
+        if not context.plan or not context.plan.requires_migration:
+            return True, []
+
+        errors: list[str] = []
+
+        try:
+            container = self.client.containers.run(
+                "evo-sandbox-backend:test",
+                command=["sh", "-lc", "cd /app && export PYTHONPATH=/app && alembic heads"],
+                environment={
+                    "APP_DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/test",
+                    "APP_ENVIRONMENT": "test",
+                },
+                detach=True,
+                remove=False,
+            )
+            self.containers.append(container.id)
+
+            result = container.wait(timeout=self.config.sandbox_timeout_seconds)
+            logs = container.logs().decode()
+
+            if result["StatusCode"] != 0:
+                errors.append(f"Alembic head check failed:\n{logs[-2000:]}")
+                return False, errors
+
+            head_lines = [line for line in logs.splitlines() if "(head)" in line]
+            if len(head_lines) != 1:
+                errors.append(
+                    "Alembic revisions must have exactly one head before deploy.\n"
+                    f"Detected heads:\n{logs[-2000:]}"
+                )
+            else:
+                logger.info("tests.alembic.single_head_passed", head=head_lines[0])
+
+        except docker.errors.ContainerError as exc:
+            errors.append(f"Alembic head check container error: {exc}")
+        except docker.errors.ImageNotFound:
+            errors.append("Alembic head check image not found")
+        except Exception as exc:
+            errors.append(f"Alembic head check error: {exc}")
 
         return len(errors) == 0, errors
 

@@ -60,6 +60,8 @@ IMPORTANT CONSTRAINTS:
 - If the plan adds or changes persisted schema (tables, columns, indexes, foreign keys),
   include exactly one Alembic migration under `backend/alembic/versions/` and set
   `requires_migration=true`.
+- Use the current Alembic revision chain from the repo map when planning migrations.
+  New migrations must extend the current head; never start a second root migration.
 - When an app currently has no features, prefer a thin vertical slice that becomes
   observable through an existing API or UI over backend-only scaffolding.
 

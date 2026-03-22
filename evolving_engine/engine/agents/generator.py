@@ -89,6 +89,10 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - If `requires_migration` is true in the plan, you MUST generate exactly one Alembic
   revision file under `backend/alembic/versions/`.
 - Use a concrete filename from the plan, and include both `upgrade()` and `downgrade()`.
+- Use the Alembic revision chain from the repo map. The new migration must set a unique
+  `revision` and `down_revision` equal to the current single head revision.
+- Never use `down_revision = None` unless the repo has no existing Alembic revisions.
+- Never create a second Alembic head.
 - Keep migrations backwards-compatible and deterministic. Prefer `op.create_table`,
   `op.add_column`, `op.create_index`, etc.
 - Do not rely on editing `backend/app/models/__init__.py` or `backend/alembic/env.py`.

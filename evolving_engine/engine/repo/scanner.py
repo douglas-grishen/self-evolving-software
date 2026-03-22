@@ -159,6 +159,41 @@ def extract_dependencies(managed_app_path: Path) -> list[Dependency]:
     return deps
 
 
+def extract_alembic_revisions(managed_app_path: Path) -> list[str]:
+    """Extract Alembic revision lineage from migration files."""
+    revisions: list[str] = []
+    versions_dir = managed_app_path / "backend" / "alembic" / "versions"
+
+    if not versions_dir.exists():
+        return revisions
+
+    revision_pattern = re.compile(r'^revision\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+    down_revision_pattern = re.compile(
+        r'^down_revision\s*=\s*(?:["\']([^"\']+)["\']|None)',
+        re.MULTILINE,
+    )
+
+    for migration_file in sorted(versions_dir.glob("*.py")):
+        try:
+            content = migration_file.read_text()
+            revision_match = revision_pattern.search(content)
+            if not revision_match:
+                continue
+            down_revision_match = down_revision_pattern.search(content)
+            down_revision = (
+                down_revision_match.group(1)
+                if down_revision_match and down_revision_match.group(1)
+                else "None"
+            )
+            revisions.append(
+                f"{revision_match.group(1)} -> {down_revision} ({migration_file.name})"
+            )
+        except Exception as exc:
+            logger.warning("scan.alembic_revision_error", file=str(migration_file), error=str(exc))
+
+    return revisions
+
+
 def build_repo_map(managed_app_path: Path) -> RepoMap:
     """Build a complete RepoMap from the managed application directory."""
     logger.info("scan.start", path=str(managed_app_path))
@@ -167,16 +202,19 @@ def build_repo_map(managed_app_path: Path) -> RepoMap:
     endpoints = extract_fastapi_endpoints(managed_app_path / "backend")
     components = extract_react_components(managed_app_path / "frontend")
     dependencies = extract_dependencies(managed_app_path)
+    alembic_revisions = extract_alembic_revisions(managed_app_path)
 
     repo_map = RepoMap(
         tree=tree,
         api_endpoints=endpoints,
         react_components=components,
         dependencies=dependencies,
+        alembic_revisions=alembic_revisions,
         summary=(
             f"Managed app with {len(endpoints)} API endpoints, "
             f"{len(components)} React components, "
-            f"{len(dependencies)} dependencies."
+            f"{len(dependencies)} dependencies, "
+            f"and {len(alembic_revisions)} Alembic revisions."
         ),
     )
 

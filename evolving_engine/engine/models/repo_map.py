@@ -103,6 +103,12 @@ class RepoMap(BaseModel):
             for dep in self.dependencies:
                 parts.append(f"- [{dep.layer}] {dep.name} {dep.version}")
 
+        # Alembic revisions
+        if self.alembic_revisions:
+            parts.append("\n## Alembic Revisions")
+            for revision in self.alembic_revisions:
+                parts.append(f"- {revision}")
+
         result = "\n".join(parts)
         if len(result) > max_chars:
             result = result[:max_chars] + "\n\n... (truncated)"
