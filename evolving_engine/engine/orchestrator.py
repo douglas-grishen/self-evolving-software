@@ -451,10 +451,20 @@ class Orchestrator:
                         )
                         should_run_proactive = True
                     elif elapsed >= 60:
+                        actionable_backlog_item = await self._peek_actionable_backlog_item()
+                        if actionable_backlog_item is not None:
+                            logger.info(
+                                "proactive.backlog_pending_trigger",
+                                item_id=actionable_backlog_item.id,
+                                task_key=actionable_backlog_item.task_key,
+                                status=actionable_backlog_item.status.value,
+                            )
+                            should_run_proactive = True
+
                         # Bootstrap shortcut: if no apps exist yet and it's been at
                         # least 1 minute since last run, trigger immediately so the
                         # desktop populates without waiting a full hour.
-                        apps = await self.event_reporter.fetch_apps()
+                        apps = None if should_run_proactive else await self.event_reporter.fetch_apps()
                         if apps == []:
                             logger.info("proactive.no_apps_bootstrap_trigger")
                             should_run_proactive = True
@@ -839,6 +849,21 @@ set of tasks that can be executed across multiple autonomous runs.
                 if all(dep in completed_keys for dep in item.depends_on):
                     return item
         return None
+
+    async def _peek_actionable_backlog_item(self) -> BacklogItem | None:
+        """Return the next actionable backlog item without mutating planner state."""
+        if not self.purpose:
+            return None
+
+        backlog_items = await self.event_reporter.fetch_backlog(
+            purpose_version=self.purpose.version,
+            include_completed=True,
+        )
+        if backlog_items is None:
+            logger.debug("proactive.backlog_probe_unavailable")
+            return None
+
+        return self._select_next_backlog_item(backlog_items)
 
     async def _execute_backlog_item(self, item: BacklogItem) -> bool:
         """Execute one persisted backlog item and update its state."""

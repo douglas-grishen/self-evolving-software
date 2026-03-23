@@ -87,6 +87,54 @@ def test_select_next_backlog_item_skips_unsatisfied_dependencies():
     assert selected.task_key == "foundation"
 
 
+@pytest.mark.asyncio
+async def test_peek_actionable_backlog_item_uses_completed_dependencies():
+    """Backlog probing should consider done tasks so dependent pending work can resume."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.purpose = SimpleNamespace(version=2)
+    reporter = _BacklogReporter(
+        [
+            _backlog_item(item_id="1", task_key="foundation", sequence=1, status=BacklogTaskStatus.DONE),
+            _backlog_item(
+                item_id="2",
+                task_key="timeline_stub",
+                sequence=2,
+                status=BacklogTaskStatus.PENDING,
+                depends_on=["foundation"],
+            ),
+        ]
+    )
+    orchestrator.event_reporter = reporter
+
+    selected = await orchestrator._peek_actionable_backlog_item()
+
+    assert reporter.fetch_calls == [{"purpose_version": 2, "include_completed": True}]
+    assert selected is not None
+    assert selected.task_key == "timeline_stub"
+
+
+@pytest.mark.asyncio
+async def test_peek_actionable_backlog_item_skips_blocked_only_backlog():
+    """Blocked-only backlogs should not trigger another proactive run."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.purpose = SimpleNamespace(version=2)
+    orchestrator.event_reporter = _BacklogReporter(
+        [
+            _backlog_item(
+                item_id="2",
+                task_key="timeline_stub",
+                sequence=2,
+                status=BacklogTaskStatus.BLOCKED,
+                depends_on=["foundation"],
+            ),
+        ]
+    )
+
+    selected = await orchestrator._peek_actionable_backlog_item()
+
+    assert selected is None
+
+
 def test_finalize_backlog_item_blocks_after_third_failed_attempt():
     """Repeated failures move the backlog item to blocked with the captured error."""
     orchestrator = Orchestrator.__new__(Orchestrator)
@@ -303,6 +351,21 @@ class _SettingsReporter:
 
     async def get_setting(self, key: str):
         return self.values.get(key)
+
+
+class _BacklogReporter:
+    def __init__(self, items: list[BacklogItem] | None) -> None:
+        self.items = items
+        self.fetch_calls: list[dict[str, object]] = []
+
+    async def fetch_backlog(self, purpose_version: int | None = None, include_completed: bool = True):
+        self.fetch_calls.append(
+            {
+                "purpose_version": purpose_version,
+                "include_completed": include_completed,
+            }
+        )
+        return self.items
 
 
 def _backlog_item(
