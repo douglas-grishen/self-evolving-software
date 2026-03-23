@@ -75,6 +75,10 @@ services:
       APP_DEBUG: "false"
       APP_ENVIRONMENT: production
       APP_ALLOWED_ORIGINS: '["http://${PUBLIC_HOST:-localhost}", "https://${PUBLIC_HOST:-localhost}"]'
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      ENGINE_LLM_PROVIDER: ${ENGINE_LLM_PROVIDER:-bedrock}
+      ENGINE_BEDROCK_REGION: ${ENGINE_BEDROCK_REGION:-us-east-1}
+      ENGINE_BEDROCK_MODEL_ID: ${ENGINE_BEDROCK_MODEL_ID:-anthropic.claude-sonnet-4-20250514-v1:0}
     expose:
       - "8000"
     depends_on:
