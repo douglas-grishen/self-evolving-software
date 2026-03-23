@@ -52,12 +52,15 @@ class EngineSettings(BaseSettings):
     # LLM Provider
     # ---------------------------------------------------------------------------
 
-    llm_provider: str = "anthropic"           # "anthropic" | "bedrock"
+    llm_provider: str = "anthropic"           # "anthropic" | "bedrock" | "openai"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-20250514"
     # Fast model for analysis/planning — cheaper, good enough for reasoning
     # Falls back to main model if not available on the API key
     anthropic_model_fast: str = "claude-sonnet-4-20250514"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5.2"
+    openai_model_fast: str = "gpt-5.2"
     bedrock_region: str = "us-east-1"
     bedrock_model_id: str = "global.anthropic.claude-sonnet-4-20250514-v1:0"
 

@@ -1,7 +1,12 @@
 """Tests for the Orchestrator state machine."""
 
 import asyncio
+from types import SimpleNamespace
 
+import pytest
+
+import engine.orchestrator as orchestrator_module
+from engine.config import EngineSettings
 from engine.context import create_context
 from engine.models.backlog import (
     BacklogAppSpec,
@@ -166,6 +171,69 @@ def test_ensure_app_registered_sets_frontend_entry_metadata():
     ]
 
 
+def test_build_provider_supports_openai(monkeypatch):
+    """The provider factory should instantiate OpenAI when configured."""
+
+    class DummyOpenAIProvider:
+        def __init__(self, config):
+            self.config = config
+
+    monkeypatch.setattr(orchestrator_module, "OpenAIProvider", DummyOpenAIProvider)
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(
+        llm_provider="openai",
+        openai_api_key="test-key",
+        openai_model="gpt-5.2",
+    )
+
+    provider = orchestrator._build_provider()
+
+    assert isinstance(provider, DummyOpenAIProvider)
+    assert provider.config.openai_model == "gpt-5.2"
+
+
+@pytest.mark.asyncio
+async def test_refresh_runtime_llm_config_switches_provider_and_model(monkeypatch):
+    """Runtime settings should be able to switch the active provider without restart."""
+
+    class DummyOpenAIProvider:
+        def __init__(self, config):
+            self.config = config
+
+    monkeypatch.setattr(orchestrator_module, "OpenAIProvider", DummyOpenAIProvider)
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(
+        llm_provider="anthropic",
+        anthropic_api_key="anthropic-key",
+        anthropic_model="claude-sonnet-4-20250514",
+    )
+    orchestrator._provider_managed_externally = False
+    orchestrator.provider = SimpleNamespace(name="old-provider")
+    orchestrator.leader = SimpleNamespace(provider=None)
+    orchestrator.generator = SimpleNamespace(provider=None)
+    orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.event_reporter = _SettingsReporter(
+        {
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.2",
+            "openai_api_key": "openai-key",
+        }
+    )
+    orchestrator._last_llm_config_signature = orchestrator._current_llm_signature()
+
+    await orchestrator._refresh_runtime_llm_config()
+
+    assert orchestrator.config.llm_provider == "openai"
+    assert orchestrator.config.openai_model == "gpt-5.2"
+    assert orchestrator.config.openai_model_fast == "gpt-5.2"
+    assert isinstance(orchestrator.provider, DummyOpenAIProvider)
+    assert orchestrator.leader.provider is orchestrator.provider
+    assert orchestrator.generator.provider is orchestrator.provider
+    assert orchestrator.purpose_evolver.provider is orchestrator.provider
+
+
 class _RecordingReporter:
     def __init__(self) -> None:
         self.updates: list[tuple[str, dict]] = []
@@ -188,6 +256,14 @@ class _AppRegistrationReporter:
     async def create_app(self, payload: dict):
         self.create_app_payloads.append(payload)
         return "app-123"
+
+
+class _SettingsReporter:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = values
+
+    async def get_setting(self, key: str):
+        return self.values.get(key)
 
 
 def _backlog_item(

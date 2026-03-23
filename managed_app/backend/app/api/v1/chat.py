@@ -5,9 +5,9 @@ the self-evolving system: its Purpose, built apps, evolution history,
 what exists, what failed, and how it all fits together.
 
 Provider strategy:
-  1. Prefer Anthropic when a key is configured in system settings
-  2. Fall back to Amazon Bedrock when Anthropic is unavailable or exhausted
-  3. Return an explicit SSE error message if both providers fail
+  1. Prefer the provider selected in system settings
+  2. Fall back to other configured providers if the preferred one fails
+  3. Return a deterministic local answer if all providers are unavailable
 """
 
 from __future__ import annotations
@@ -36,12 +36,13 @@ from app.models.evolution import (
     PurposeRecord,
 )
 from app.models.system_settings import SystemSetting
+from app.system_settings import default_model_for_provider, normalize_llm_provider
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MODEL = os.environ.get("ENGINE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+_ANTHROPIC_MODEL = os.environ.get("ENGINE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 _BEDROCK_REGION = os.environ.get("ENGINE_BEDROCK_REGION") or os.environ.get(
     "AWS_REGION",
     "us-east-1",
@@ -50,19 +51,30 @@ _BEDROCK_MODEL_ID = os.environ.get(
     "ENGINE_BEDROCK_MODEL_ID",
     "global.anthropic.claude-sonnet-4-20250514-v1:0",
 )
+_OPENAI_MODEL = os.environ.get("ENGINE_OPENAI_MODEL", "gpt-5.2")
+_LLM_SETTING_KEYS = ("llm_provider", "llm_model", "anthropic_api_key", "openai_api_key")
 
 
-def _provider_order(anthropic_api_key: str) -> list[str]:
-    """Return provider order, honoring production preference from env."""
-    preferred = os.environ.get("ENGINE_LLM_PROVIDER", "").strip().lower()
-    if preferred == "bedrock":
-        order = ["bedrock", "anthropic"]
-    else:
-        order = ["anthropic", "bedrock"]
-
-    if not anthropic_api_key:
-        return [provider for provider in order if provider != "anthropic"]
-    return order
+def _provider_order(
+    preferred_provider: str,
+    *,
+    anthropic_api_key: str,
+    openai_api_key: str,
+) -> list[str]:
+    """Return provider order honoring runtime preference and configured credentials."""
+    preferred = normalize_llm_provider(
+        preferred_provider or os.environ.get("ENGINE_LLM_PROVIDER")
+    )
+    ordered = [preferred, "anthropic", "openai", "bedrock"]
+    result: list[str] = []
+    for provider in ordered:
+        if provider == "anthropic" and not anthropic_api_key:
+            continue
+        if provider == "openai" and not openai_api_key:
+            continue
+        if provider not in result:
+            result.append(provider)
+    return result
 
 
 class ChatProviderError(RuntimeError):
@@ -197,7 +209,7 @@ INCEPTIONS (directives to modify the Purpose)
 ARCHITECTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Engine (MAPE-K loop): runs every 60 min, monitors anomalies, analyzes Purpose gaps, plans changes,
-  generates code with Claude Sonnet, validates (pytest + docker build), deploys if passing.
+  generates code with the configured LLM provider, validates (pytest + docker build), deploys if passing.
 • Backend API (FastAPI + PostgreSQL): stores apps, evolution events, inceptions, system settings.
 • Frontend (React): macOS-style desktop UI showing app icons, menu bar, system windows.
 • The engine writes code to /opt/evolved-app/, builds Docker images, and restarts containers.
@@ -209,15 +221,22 @@ ARCHITECTURE
 # API key helper
 # ---------------------------------------------------------------------------
 
-async def _get_api_key(db: AsyncSession) -> str:
-    """Get Anthropic API key: prefer system_settings, fall back to env var."""
+async def _get_runtime_settings(db: AsyncSession) -> dict[str, str]:
+    """Fetch LLM runtime settings once so chat uses a coherent provider snapshot."""
     result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "anthropic_api_key")
+        select(SystemSetting).where(SystemSetting.key.in_(_LLM_SETTING_KEYS))
     )
-    setting = result.scalar_one_or_none()
-    if setting and setting.value:
-        return setting.value
-    return os.environ.get("ENGINE_ANTHROPIC_API_KEY", "")
+    values = {setting.key: setting.value for setting in result.scalars().all()}
+
+    provider = normalize_llm_provider(values.get("llm_provider") or os.environ.get("ENGINE_LLM_PROVIDER"))
+    model = (values.get("llm_model") or "").strip() or default_model_for_provider(provider)
+
+    return {
+        "llm_provider": provider,
+        "llm_model": model,
+        "anthropic_api_key": values.get("anthropic_api_key") or os.environ.get("ENGINE_ANTHROPIC_API_KEY", ""),
+        "openai_api_key": values.get("openai_api_key") or os.environ.get("ENGINE_OPENAI_API_KEY", ""),
+    }
 
 
 def _normalize_text(text: str) -> str:
@@ -403,10 +422,21 @@ def _to_bedrock_messages(messages: list[dict]) -> list[dict]:
     ]
 
 
-async def _stream_anthropic(api_key: str, system: str, messages: list[dict]) -> AsyncIterator[str]:
+def _to_openai_messages(system: str, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Translate chat history into OpenAI chat-completions messages."""
+    return [{"role": "developer", "content": system}] + messages
+
+
+async def _stream_anthropic(
+    api_key: str,
+    system: str,
+    messages: list[dict],
+    *,
+    model: str,
+) -> AsyncIterator[str]:
     """Call Anthropic API with streaming and yield SSE chunks."""
     payload = {
-        "model": _MODEL,
+        "model": model,
         "max_tokens": 2048,
         "system": system,
         "messages": messages,
@@ -448,14 +478,19 @@ async def _stream_anthropic(api_key: str, system: str, messages: list[dict]) -> 
                 raise ChatProviderError("Anthropic returned no text.")
 
 
-async def _stream_bedrock(system: str, messages: list[dict]) -> AsyncIterator[str]:
+async def _stream_bedrock(
+    system: str,
+    messages: list[dict],
+    *,
+    model: str,
+) -> AsyncIterator[str]:
     """Call Bedrock Converse API and return a single SSE text chunk."""
     client = boto3.client("bedrock-runtime", region_name=_BEDROCK_REGION)
 
     try:
         response = await asyncio.to_thread(
             client.converse,
-            modelId=_BEDROCK_MODEL_ID,
+            modelId=model,
             system=[{"text": system}],
             messages=_to_bedrock_messages(messages),
             inferenceConfig={"maxTokens": 2048},
@@ -472,27 +507,92 @@ async def _stream_bedrock(system: str, messages: list[dict]) -> AsyncIterator[st
     yield _sse_done()
 
 
+async def _stream_openai(
+    api_key: str,
+    system: str,
+    messages: list[dict],
+    *,
+    model: str,
+) -> AsyncIterator[str]:
+    """Call OpenAI Chat Completions API and stream SSE chunks."""
+    try:
+        from openai import AsyncOpenAI
+    except Exception as exc:  # pragma: no cover - depends on installed environment
+        raise ChatProviderError(f"OpenAI SDK unavailable: {exc}") from exc
+
+    client = AsyncOpenAI(api_key=api_key)
+
+    try:
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=_to_openai_messages(system, messages),
+            stream=True,
+        )
+    except Exception as exc:  # pragma: no cover - exact SDK errors depend on runtime
+        raise ChatProviderError(str(exc)) from exc
+
+    emitted_text = False
+    async for chunk in stream:
+        for choice in chunk.choices:
+            delta = choice.delta.content or ""
+            if delta:
+                emitted_text = True
+                yield _sse_text(delta)
+
+    if not emitted_text:
+        raise ChatProviderError("OpenAI returned no text.")
+
+    yield _sse_done()
+
+
 async def _stream_chat_response(
     *,
     system: str,
     messages: list[dict],
+    provider: str,
+    model: str,
     anthropic_api_key: str,
+    openai_api_key: str,
     local_fallback_text: str | None = None,
 ) -> AsyncIterator[str]:
     """Try configured providers in order and surface real upstream failures."""
     provider_errors: list[str] = []
 
-    for provider in _provider_order(anthropic_api_key):
+    for active_provider in _provider_order(
+        provider,
+        anthropic_api_key=anthropic_api_key,
+        openai_api_key=openai_api_key,
+    ):
         try:
-            if provider == "anthropic":
-                async for chunk in _stream_anthropic(anthropic_api_key, system, messages):
+            if active_provider == "anthropic":
+                anthropic_model = model if provider == "anthropic" else _ANTHROPIC_MODEL
+                async for chunk in _stream_anthropic(
+                    anthropic_api_key,
+                    system,
+                    messages,
+                    model=anthropic_model,
+                ):
+                    yield chunk
+            elif active_provider == "openai":
+                openai_model = model if provider == "openai" else _OPENAI_MODEL
+                async for chunk in _stream_openai(
+                    openai_api_key,
+                    system,
+                    messages,
+                    model=openai_model,
+                ):
                     yield chunk
             else:
-                async for chunk in _stream_bedrock(system, messages):
+                bedrock_model = model if provider == "bedrock" else _BEDROCK_MODEL_ID
+                async for chunk in _stream_bedrock(
+                    system,
+                    messages,
+                    model=bedrock_model,
+                ):
                     yield chunk
             return
         except ChatProviderError as exc:
-            provider_errors.append(f"{provider.title()}: {exc}")
+            provider_errors.append(f"{active_provider.title()}: {exc}")
 
     if local_fallback_text:
         yield _sse_text(local_fallback_text)
@@ -515,7 +615,7 @@ async def chat(
 ) -> StreamingResponse:
     """Stream a chat response with full system context."""
     system = await _build_system_prompt(db)
-    api_key = await _get_api_key(db)
+    runtime = await _get_runtime_settings(db)
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
     local_fallback_text = await _build_local_fallback_reply(
         db,
@@ -527,7 +627,10 @@ async def chat(
         _stream_chat_response(
             system=system,
             messages=messages,
-            anthropic_api_key=api_key,
+            provider=runtime["llm_provider"],
+            model=runtime["llm_model"],
+            anthropic_api_key=runtime["anthropic_api_key"],
+            openai_api_key=runtime["openai_api_key"],
             local_fallback_text=local_fallback_text,
         ),
         media_type="text/event-stream",

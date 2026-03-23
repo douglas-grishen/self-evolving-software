@@ -59,6 +59,7 @@ from engine.monitor.observer import RuntimeObserver
 from engine.providers.anthropic_provider import AnthropicProvider
 from engine.providers.base import BaseLLMProvider
 from engine.providers.bedrock_provider import BedrockProvider
+from engine.providers.openai_provider import OpenAIProvider
 from engine.sandbox.base import BaseSandbox
 from engine.sandbox.docker_sandbox import DockerSandbox
 
@@ -96,12 +97,11 @@ class Orchestrator:
         self.config = config or settings
 
         # LLM provider
+        self._provider_managed_externally = provider is not None
         if provider:
             self.provider = provider
-        elif self.config.llm_provider == "bedrock":
-            self.provider = BedrockProvider(self.config)
         else:
-            self.provider = AnthropicProvider(self.config)
+            self.provider = self._build_provider()
 
         # Sandbox
         self.sandbox = sandbox or DockerSandbox(self.config)
@@ -157,6 +157,120 @@ class Orchestrator:
 
         # Proactive planning cache — skip re-planning if the inputs are unchanged
         self._last_backlog_hash: str = ""
+        self._last_llm_config_signature = self._current_llm_signature()
+
+    def _build_provider(self) -> BaseLLMProvider:
+        """Instantiate the configured LLM provider."""
+        if self.config.llm_provider == "bedrock":
+            return BedrockProvider(self.config)
+        if self.config.llm_provider == "openai":
+            return OpenAIProvider(self.config)
+        return AnthropicProvider(self.config)
+
+    def _current_llm_signature(self) -> tuple[str, str, str, str]:
+        """Return the settings that materially affect provider selection."""
+        return (
+            self.config.llm_provider,
+            self.config.anthropic_api_key,
+            self.config.openai_api_key,
+            self._active_provider_model(),
+        )
+
+    def _active_provider_model(self) -> str:
+        """Return the active default model for the currently selected provider."""
+        if self.config.llm_provider == "bedrock":
+            return self.config.bedrock_model_id
+        if self.config.llm_provider == "openai":
+            return self.config.openai_model
+        return self.config.anthropic_model
+
+    def _sync_agents_with_provider(self) -> None:
+        """Push the current provider instance into the long-lived agents."""
+        self.leader.provider = self.provider
+        self.generator.provider = self.provider
+        self.purpose_evolver.provider = self.provider
+
+    async def _refresh_runtime_llm_config(self) -> None:
+        """Hot-reload provider and model choices from persisted system settings."""
+        if self._provider_managed_externally:
+            return
+
+        provider_value = await self.event_reporter.get_setting("llm_provider")
+        selected_provider = (provider_value or self.config.llm_provider or "anthropic").strip().lower()
+        if selected_provider not in {"anthropic", "bedrock", "openai"}:
+            logger.warning("llm_config.invalid_provider", provider=selected_provider)
+            selected_provider = self.config.llm_provider
+
+        llm_model = (await self.event_reporter.get_setting("llm_model") or "").strip()
+        anthropic_api_key = await self.event_reporter.get_setting("anthropic_api_key")
+        openai_api_key = await self.event_reporter.get_setting("openai_api_key")
+
+        previous_state = (
+            self.config.llm_provider,
+            self.config.anthropic_api_key,
+            self.config.anthropic_model,
+            self.config.anthropic_model_fast,
+            self.config.openai_api_key,
+            self.config.openai_model,
+            self.config.openai_model_fast,
+            self.config.bedrock_model_id,
+        )
+
+        if anthropic_api_key is not None:
+            self.config.anthropic_api_key = anthropic_api_key
+        if openai_api_key is not None:
+            self.config.openai_api_key = openai_api_key
+
+        self.config.llm_provider = selected_provider
+        if selected_provider == "bedrock":
+            if llm_model:
+                self.config.bedrock_model_id = llm_model
+        elif selected_provider == "openai":
+            if llm_model:
+                self.config.openai_model = llm_model
+                self.config.openai_model_fast = llm_model
+        else:
+            if llm_model:
+                self.config.anthropic_model = llm_model
+                self.config.anthropic_model_fast = llm_model
+
+        current_signature = self._current_llm_signature()
+        if current_signature == self._last_llm_config_signature:
+            return
+
+        attempted_provider = self.config.llm_provider
+        attempted_model = self._active_provider_model()
+        try:
+            next_provider = self._build_provider()
+        except Exception as exc:
+            (
+                self.config.llm_provider,
+                self.config.anthropic_api_key,
+                self.config.anthropic_model,
+                self.config.anthropic_model_fast,
+                self.config.openai_api_key,
+                self.config.openai_model,
+                self.config.openai_model_fast,
+                self.config.bedrock_model_id,
+            ) = previous_state
+            logger.warning(
+                "llm_config.reload_failed",
+                provider=attempted_provider,
+                model=attempted_model,
+                error=str(exc),
+            )
+            return
+
+        self.provider = next_provider
+        self._sync_agents_with_provider()
+        self._last_llm_config_signature = current_signature
+        logger.info(
+            "llm_config.reloaded",
+            provider=self.config.llm_provider,
+            model=self._active_provider_model(),
+            anthropic_key_configured=bool(self.config.anthropic_api_key),
+            openai_key_configured=bool(self.config.openai_api_key),
+        )
 
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
@@ -282,6 +396,8 @@ class Orchestrator:
                             version=self.purpose.version,
                             identity=self.purpose.identity.name,
                         )
+
+                await self._refresh_runtime_llm_config()
 
                 # Process pending Inceptions before monitoring
                 await self._process_pending_inceptions()

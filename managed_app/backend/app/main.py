@@ -11,6 +11,7 @@ from app.auth import ensure_default_admin
 from app.config import settings
 from app.database import async_session
 from app.middleware.metrics import MetricsMiddleware
+from app.system_settings import ensure_default_system_settings
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Seed default admin user on first startup
     async with async_session() as session:
         await ensure_default_admin(session)
+        await ensure_default_system_settings(session)
     yield
 
 

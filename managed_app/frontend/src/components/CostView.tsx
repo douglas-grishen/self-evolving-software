@@ -71,7 +71,22 @@ export function CostView() {
     () => settings.find((setting) => setting.key === "anthropic_api_key"),
     [settings],
   );
+  const openaiSetting = useMemo(
+    () => settings.find((setting) => setting.key === "openai_api_key"),
+    [settings],
+  );
+  const providerSetting = useMemo(
+    () => settings.find((setting) => setting.key === "llm_provider"),
+    [settings],
+  );
+  const modelSetting = useMemo(
+    () => settings.find((setting) => setting.key === "llm_model"),
+    [settings],
+  );
   const anthropicConfigured = Boolean(anthropicSetting?.value);
+  const openaiConfigured = Boolean(openaiSetting?.value);
+  const activeProvider = providerSetting?.value || "anthropic";
+  const activeModel = modelSetting?.value || "Unknown";
 
   const failedRate = useMemo(() => {
     if (!status || status.total_evolutions === 0) return "0%";
@@ -133,11 +148,31 @@ export function CostView() {
           <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e5e7eb", marginBottom: 10 }}>
             Provider Configuration
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, color: "#cbd5e1", fontSize: "0.82rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, color: "#cbd5e1", fontSize: "0.82rem" }}>
+              <div>
+              Active provider:
+              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{activeProvider}</strong>
+            </div>
             <div>
-              Anthropic API key:
+              Active model:
+              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{activeModel}</strong>
+            </div>
+            <div>
+              Anthropic key:
               <strong style={{ color: anthropicConfigured ? "#86efac" : "#fca5a5", marginLeft: 6 }}>
                 {loadingSettings ? "Checking…" : anthropicConfigured ? "Configured" : "Missing"}
+              </strong>
+            </div>
+            <div>
+              OpenAI key:
+              <strong style={{ color: openaiConfigured ? "#86efac" : "#fca5a5", marginLeft: 6 }}>
+                {loadingSettings ? "Checking…" : openaiConfigured ? "Configured" : "Missing"}
+              </strong>
+            </div>
+            <div>
+              Bedrock runtime:
+              <strong style={{ marginLeft: 6, color: activeProvider === "bedrock" ? "#86efac" : "#94a3b8" }}>
+                {activeProvider === "bedrock" ? "Selected" : "Standby"}
               </strong>
             </div>
             <div>

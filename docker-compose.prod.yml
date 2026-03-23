@@ -79,6 +79,10 @@ services:
       ENGINE_LLM_PROVIDER: ${ENGINE_LLM_PROVIDER:-bedrock}
       ENGINE_BEDROCK_REGION: ${ENGINE_BEDROCK_REGION:-us-east-1}
       ENGINE_BEDROCK_MODEL_ID: ${ENGINE_BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-20250514-v1:0}
+      ENGINE_ANTHROPIC_API_KEY: ${ENGINE_ANTHROPIC_API_KEY:-}
+      ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      ENGINE_OPENAI_API_KEY: ${ENGINE_OPENAI_API_KEY:-}
+      ENGINE_OPENAI_MODEL: ${ENGINE_OPENAI_MODEL:-gpt-5.2}
     expose:
       - "8000"
     depends_on:
@@ -144,6 +148,8 @@ services:
       ENGINE_BEDROCK_MODEL_ID: ${ENGINE_BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-20250514-v1:0}
       ENGINE_ANTHROPIC_API_KEY: ${ENGINE_ANTHROPIC_API_KEY:-}
       ENGINE_ANTHROPIC_MODEL: ${ENGINE_ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      ENGINE_OPENAI_API_KEY: ${ENGINE_OPENAI_API_KEY:-}
+      ENGINE_OPENAI_MODEL: ${ENGINE_OPENAI_MODEL:-gpt-5.2}
       # --- Sandbox (Docker-based validation) ---
       ENGINE_SANDBOX_TYPE: docker
       # --- Observability ---

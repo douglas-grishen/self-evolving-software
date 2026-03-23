@@ -1,5 +1,6 @@
 """System settings API — runtime configuration for the engine."""
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,10 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.system_settings import SystemSetting
 from app.schemas.system_settings import SettingResponse, SettingUpdate
+from app.system_settings import (
+    EDITABLE_SETTING_KEYS,
+    SECRET_SETTING_KEYS,
+    mask_setting_value,
+    normalize_llm_provider,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
-
-_EDITABLE_KEYS = {"proactive_interval_minutes", "anthropic_api_key"}
 
 
 @router.get("", response_model=List[SettingResponse])
@@ -18,15 +23,15 @@ async def list_settings(db: AsyncSession = Depends(get_db)) -> list:
     """List all system settings."""
     result = await db.execute(select(SystemSetting).order_by(SystemSetting.key))
     settings = list(result.scalars().all())
-    # Mask the API key value
-    out = []
-    for s in settings:
-        if s.key == "anthropic_api_key" and s.value:
-            masked = "*" * max(0, len(s.value) - 4) + s.value[-4:]
-            out.append(SettingResponse(key=s.key, value=masked, description=s.description, updated_at=s.updated_at))
-        else:
-            out.append(SettingResponse(key=s.key, value=s.value, description=s.description, updated_at=s.updated_at))
-    return out
+    return [
+        SettingResponse(
+            key=setting.key,
+            value=mask_setting_value(setting.key, setting.value),
+            description=setting.description,
+            updated_at=setting.updated_at,
+        )
+        for setting in settings
+    ]
 
 
 @router.get("/{key}", response_model=SettingResponse)
@@ -43,9 +48,9 @@ async def update_setting(
     key: str,
     payload: SettingUpdate,
     db: AsyncSession = Depends(get_db),
-) -> SystemSetting:
+) -> SettingResponse:
     """Update a setting value. Only editable keys are allowed."""
-    if key not in _EDITABLE_KEYS:
+    if key not in EDITABLE_SETTING_KEYS:
         raise HTTPException(status_code=403, detail=f"Setting '{key}' is not editable via API")
 
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
@@ -61,8 +66,27 @@ async def update_setting(
                 raise HTTPException(status_code=422, detail="Interval must be between 5 and 1440 minutes")
         except ValueError:
             raise HTTPException(status_code=422, detail="Interval must be an integer")
+    elif key == "llm_provider":
+        provider = normalize_llm_provider(payload.value)
+        if provider != payload.value.strip().lower():
+            raise HTTPException(
+                status_code=422,
+                detail="Provider must be one of: anthropic, bedrock, openai",
+            )
+        payload.value = provider
+    elif key == "llm_model":
+        payload.value = payload.value.strip()
+        if not payload.value:
+            raise HTTPException(status_code=422, detail="Model cannot be blank")
+    elif key in SECRET_SETTING_KEYS:
+        payload.value = payload.value.strip()
 
     setting.value = payload.value
     await db.flush()
     await db.refresh(setting)
-    return setting
+    return SettingResponse(
+        key=setting.key,
+        value=mask_setting_value(setting.key, setting.value),
+        description=setting.description,
+        updated_at=setting.updated_at,
+    )

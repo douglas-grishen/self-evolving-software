@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 
 interface Setting {
   key: string;
@@ -7,11 +7,41 @@ interface Setting {
   updated_at: string;
 }
 
+type ProviderKey = "anthropic" | "bedrock" | "openai";
+
+const SECRET_KEYS = new Set(["anthropic_api_key", "openai_api_key"]);
+
+function defaultModelForProvider(provider: ProviderKey): string {
+  switch (provider) {
+    case "bedrock":
+      return "global.anthropic.claude-sonnet-4-20250514-v1:0";
+    case "openai":
+      return "gpt-5.2";
+    default:
+      return "claude-sonnet-4-20250514";
+  }
+}
+
+function normalizeProvider(value: string | undefined): ProviderKey {
+  if (value === "bedrock" || value === "openai") return value;
+  return "anthropic";
+}
+
 function IntervalDisplay({ minutes }: { minutes: number }) {
   if (minutes < 60) return <span style={{ color: "#888", fontSize: "0.72rem" }}>{minutes} min</span>;
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return <span style={{ color: "#888", fontSize: "0.72rem" }}>{h}h{m > 0 ? ` ${m}m` : ""}</span>;
+}
+
+function statusStyles(active: boolean) {
+  return active
+    ? {
+        background: "rgba(34,197,94,0.15)",
+        color: "#22c55e",
+        borderColor: "rgba(34,197,94,0.3)",
+      }
+    : {};
 }
 
 export function SettingsView() {
@@ -23,52 +53,95 @@ export function SettingsView() {
   const [values, setValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    let cancelled = false;
+
     fetch("/api/v1/settings")
-      .then(r => r.json())
+      .then((r) => r.json())
       .then((data: Setting[]) => {
+        if (cancelled) return;
         setSettings(data);
-        const v: Record<string, string> = {};
-        data.forEach(s => { v[s.key] = s.value; });
-        setValues(v);
+        const nextValues: Record<string, string> = {};
+        data.forEach((setting) => {
+          nextValues[setting.key] = SECRET_KEYS.has(setting.key) ? "" : setting.value;
+        });
+        setValues(nextValues);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const save = async (key: string) => {
-    setSaving(p => ({ ...p, [key]: true }));
-    setErrors(p => ({ ...p, [key]: "" }));
+  const updateSettingState = (updated: Setting, overrideValue?: string) => {
+    setSettings((current) => {
+      const next = current.filter((setting) => setting.key !== updated.key);
+      return [...next, updated].sort((a, b) => a.key.localeCompare(b.key));
+    });
+    setValues((current) => ({
+      ...current,
+      [updated.key]: SECRET_KEYS.has(updated.key) ? "" : overrideValue ?? updated.value,
+    }));
+  };
+
+  const persistSetting = async (key: string, value: string): Promise<boolean> => {
+    const response = await fetch(`/api/v1/settings/${key}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({ detail: "Failed to save" }));
+      throw new Error(data.detail || "Failed to save");
+    }
+
+    const updated = (await response.json()) as Setting;
+    updateSettingState(updated, value);
+    return true;
+  };
+
+  const runSave = async (id: string, fn: () => Promise<void>) => {
+    setSaving((current) => ({ ...current, [id]: true }));
+    setErrors((current) => ({ ...current, [id]: "" }));
     try {
-      const res = await fetch(`/api/v1/settings/${key}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: values[key] }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        setErrors(p => ({ ...p, [key]: data.detail || "Failed to save" }));
-      } else {
-        setSaved(p => ({ ...p, [key]: true }));
-        setTimeout(() => setSaved(p => ({ ...p, [key]: false })), 2500);
-      }
-    } catch {
-      setErrors(p => ({ ...p, [key]: "Network error" }));
+      await fn();
+      setSaved((current) => ({ ...current, [id]: true }));
+      window.setTimeout(() => {
+        setSaved((current) => ({ ...current, [id]: false }));
+      }, 2500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Network error";
+      setErrors((current) => ({ ...current, [id]: message }));
     } finally {
-      setSaving(p => ({ ...p, [key]: false }));
+      setSaving((current) => ({ ...current, [id]: false }));
     }
   };
 
+  const lastUpdated = (() => {
+    if (settings.length === 0) return null;
+    return settings.reduce((latest, setting) => (
+      new Date(setting.updated_at).getTime() > new Date(latest.updated_at).getTime() ? setting : latest
+    )).updated_at;
+  })();
+
   if (loading) return <div className="empty-state">Loading settings…</div>;
 
-  const intervalMinutes = parseInt(values["proactive_interval_minutes"] || "60", 10);
+  const provider = normalizeProvider(values.llm_provider);
+  const intervalMinutes = parseInt(values.proactive_interval_minutes || "60", 10);
+  const providerModelPlaceholder = defaultModelForProvider(provider);
+  const anthropicMasked = settings.find((setting) => setting.key === "anthropic_api_key")?.value || "";
+  const openaiMasked = settings.find((setting) => setting.key === "openai_api_key")?.value || "";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <p style={{ margin: 0, fontSize: "0.8rem", color: "#888", lineHeight: 1.5 }}>
-        Runtime configuration for the self-evolving engine.
-        Changes to the interval take effect on the next engine cycle.
+        Runtime configuration for the self-evolving engine. Chat uses these changes immediately.
+        The autonomous engine picks them up on the next control-loop cycle.
       </p>
 
-      {/* Proactive interval */}
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <div>
@@ -84,65 +157,181 @@ export function SettingsView() {
             max={240}
             step={5}
             value={isNaN(intervalMinutes) ? 60 : intervalMinutes}
-            onChange={e => setValues(p => ({ ...p, proactive_interval_minutes: e.target.value }))}
+            onChange={(e) => setValues((current) => ({ ...current, proactive_interval_minutes: e.target.value }))}
             style={{ flex: 1, accentColor: "#3b82f6" }}
           />
           <input
             type="number"
             min={5}
             max={1440}
-            value={values["proactive_interval_minutes"] || "60"}
-            onChange={e => setValues(p => ({ ...p, proactive_interval_minutes: e.target.value }))}
+            value={values.proactive_interval_minutes || "60"}
+            onChange={(e) => setValues((current) => ({ ...current, proactive_interval_minutes: e.target.value }))}
             style={{ width: 60, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "5px 8px", fontFamily: "inherit", fontSize: "0.82rem", textAlign: "center" }}
           />
           <span style={{ fontSize: "0.78rem", color: "#666" }}>min</span>
           <button
             className="refresh-btn"
-            style={{ padding: "4px 12px", background: saved["proactive_interval_minutes"] ? "rgba(34,197,94,0.15)" : undefined, color: saved["proactive_interval_minutes"] ? "#22c55e" : undefined, borderColor: saved["proactive_interval_minutes"] ? "rgba(34,197,94,0.3)" : undefined }}
-            onClick={() => save("proactive_interval_minutes")}
-            disabled={saving["proactive_interval_minutes"]}
+            style={{ padding: "4px 12px", ...statusStyles(Boolean(saved.proactive_interval_minutes)) }}
+            onClick={() => runSave("proactive_interval_minutes", () => persistSetting("proactive_interval_minutes", values.proactive_interval_minutes || "60").then(() => undefined))}
+            disabled={saving.proactive_interval_minutes}
           >
-            {saved["proactive_interval_minutes"] ? "✓ Saved" : saving["proactive_interval_minutes"] ? "…" : "Save"}
+            {saved.proactive_interval_minutes ? "✓ Saved" : saving.proactive_interval_minutes ? "…" : "Save"}
           </button>
         </div>
-        {errors["proactive_interval_minutes"] && (
-          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors["proactive_interval_minutes"]}</div>
+        {errors.proactive_interval_minutes && (
+          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.proactive_interval_minutes}</div>
         )}
       </div>
 
-      {/* API Key */}
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Anthropic API Key</div>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>LLM Runtime</div>
           <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
-            Override the ENGINE_ANTHROPIC_API_KEY env var.{" "}
-            <span style={{ color: "#f59e0b" }}>Requires engine restart to apply.</span>
+            Choose the provider and active model used by chat and the self-evolution engine.
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="password"
-            placeholder="sk-ant-… (leave blank to use env var)"
-            value={values["anthropic_api_key"] || ""}
-            onChange={e => setValues(p => ({ ...p, anthropic_api_key: e.target.value }))}
-            style={{ flex: 1, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
-          />
+
+        <div style={{ display: "grid", gridTemplateColumns: "0.85fr 1.15fr auto", gap: 8, alignItems: "end" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
+            <select
+              value={provider}
+              onChange={(e) => {
+                const nextProvider = normalizeProvider(e.target.value);
+                setValues((current) => {
+                  const currentProvider = normalizeProvider(current.llm_provider);
+                  const currentModel = (current.llm_model || "").trim();
+                  const nextModel = !currentModel || currentModel === defaultModelForProvider(currentProvider)
+                    ? defaultModelForProvider(nextProvider)
+                    : currentModel;
+                  return {
+                    ...current,
+                    llm_provider: nextProvider,
+                    llm_model: nextModel,
+                  };
+                });
+              }}
+              style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
+            >
+              <option value="anthropic">Anthropic</option>
+              <option value="bedrock">Amazon Bedrock</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </label>
+
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
+            <input
+              type="text"
+              value={values.llm_model || ""}
+              placeholder={providerModelPlaceholder}
+              onChange={(e) => setValues((current) => ({ ...current, llm_model: e.target.value }))}
+              style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+            />
+          </label>
+
           <button
             className="refresh-btn"
-            style={{ padding: "4px 12px", background: saved["anthropic_api_key"] ? "rgba(34,197,94,0.15)" : undefined, color: saved["anthropic_api_key"] ? "#22c55e" : undefined }}
-            onClick={() => save("anthropic_api_key")}
-            disabled={saving["anthropic_api_key"]}
+            style={{ padding: "6px 12px", ...statusStyles(Boolean(saved.llm_runtime)) }}
+            onClick={() => runSave("llm_runtime", async () => {
+              await persistSetting("llm_provider", provider);
+              await persistSetting("llm_model", (values.llm_model || providerModelPlaceholder).trim());
+            })}
+            disabled={saving.llm_runtime}
           >
-            {saved["anthropic_api_key"] ? "✓ Saved" : saving["anthropic_api_key"] ? "…" : "Save"}
+            {saved.llm_runtime ? "✓ Saved" : saving.llm_runtime ? "…" : "Save"}
           </button>
         </div>
-        {errors["anthropic_api_key"] && (
-          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors["anthropic_api_key"]}</div>
+
+        <div style={{ marginTop: 10, fontSize: "0.75rem", color: "#666", lineHeight: 1.5 }}>
+          {provider === "bedrock" && "Bedrock uses the instance IAM role. The model field expects a Bedrock model ID or inference profile."}
+          {provider === "anthropic" && "Anthropic uses the key below when set; otherwise it falls back to ENGINE_ANTHROPIC_API_KEY."}
+          {provider === "openai" && "OpenAI uses the key below when set; otherwise it falls back to ENGINE_OPENAI_API_KEY."}
+        </div>
+
+        {errors.llm_runtime && (
+          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.llm_runtime}</div>
         )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 }}>
+        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Anthropic API Key</div>
+            <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+              {anthropicMasked ? `Stored locally as ${anthropicMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_ANTHROPIC_API_KEY."}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="password"
+              placeholder="sk-ant-…"
+              value={values.anthropic_api_key || ""}
+              onChange={(e) => setValues((current) => ({ ...current, anthropic_api_key: e.target.value }))}
+              style={{ flex: 1, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+            />
+            <button
+              className="refresh-btn"
+              style={{ padding: "4px 12px", ...statusStyles(Boolean(saved.anthropic_api_key)) }}
+              onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", (values.anthropic_api_key || "").trim()).then(() => undefined))}
+              disabled={saving.anthropic_api_key || !(values.anthropic_api_key || "").trim()}
+            >
+              {saved.anthropic_api_key ? "✓ Saved" : saving.anthropic_api_key ? "…" : "Update"}
+            </button>
+            <button
+              className="refresh-btn"
+              style={{ padding: "4px 12px" }}
+              onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", "").then(() => undefined))}
+              disabled={saving.anthropic_api_key || !anthropicMasked}
+            >
+              Clear
+            </button>
+          </div>
+          {errors.anthropic_api_key && (
+            <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.anthropic_api_key}</div>
+          )}
+        </div>
+
+        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>OpenAI API Key</div>
+            <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+              {openaiMasked ? `Stored locally as ${openaiMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_OPENAI_API_KEY."}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="password"
+              placeholder="sk-proj-…"
+              value={values.openai_api_key || ""}
+              onChange={(e) => setValues((current) => ({ ...current, openai_api_key: e.target.value }))}
+              style={{ flex: 1, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+            />
+            <button
+              className="refresh-btn"
+              style={{ padding: "4px 12px", ...statusStyles(Boolean(saved.openai_api_key)) }}
+              onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", (values.openai_api_key || "").trim()).then(() => undefined))}
+              disabled={saving.openai_api_key || !(values.openai_api_key || "").trim()}
+            >
+              {saved.openai_api_key ? "✓ Saved" : saving.openai_api_key ? "…" : "Update"}
+            </button>
+            <button
+              className="refresh-btn"
+              style={{ padding: "4px 12px" }}
+              onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", "").then(() => undefined))}
+              disabled={saving.openai_api_key || !openaiMasked}
+            >
+              Clear
+            </button>
+          </div>
+          {errors.openai_api_key && (
+            <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.openai_api_key}</div>
+          )}
+        </div>
       </div>
 
       <div style={{ fontSize: "0.72rem", color: "#555", textAlign: "right" }}>
-        {settings.length > 0 && `Last updated: ${new Date(settings[0].updated_at).toLocaleString()}`}
+        {lastUpdated && `Last updated: ${new Date(lastUpdated).toLocaleString()}`}
       </div>
     </div>
   );

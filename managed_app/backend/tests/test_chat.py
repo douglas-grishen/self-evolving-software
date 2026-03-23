@@ -31,7 +31,10 @@ async def test_stream_chat_response_falls_back_to_bedrock(monkeypatch):
         chat_api._stream_chat_response(
             system="system",
             messages=[{"role": "user", "content": "What apps currently exist?"}],
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
             anthropic_api_key="test-key",
+            openai_api_key="",
         )
     )
 
@@ -60,7 +63,10 @@ async def test_stream_chat_response_surfaces_provider_errors(monkeypatch):
         chat_api._stream_chat_response(
             system="system",
             messages=[{"role": "user", "content": "What apps currently exist?"}],
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
             anthropic_api_key="test-key",
+            openai_api_key="",
         )
     )
 
@@ -94,7 +100,10 @@ async def test_stream_chat_response_prefers_bedrock_when_configured(monkeypatch)
         chat_api._stream_chat_response(
             system="system",
             messages=[{"role": "user", "content": "What apps currently exist?"}],
+            provider="bedrock",
+            model="bedrock-model",
             anthropic_api_key="test-key",
+            openai_api_key="",
         )
     )
 
@@ -124,12 +133,52 @@ async def test_stream_chat_response_uses_local_fallback_when_providers_fail(monk
         chat_api._stream_chat_response(
             system="system",
             messages=[{"role": "user", "content": "What apps currently exist?"}],
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
             anthropic_api_key="test-key",
+            openai_api_key="",
             local_fallback_text="Live apps:\n- Competitive Intelligence",
         )
     )
 
     assert chunks == [
         'data: {"text": "Live apps:\\n- Competitive Intelligence"}\n\n',
+        "data: [DONE]\n\n",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_response_prefers_openai_when_selected(monkeypatch):
+    """OpenAI should be used first when selected in runtime settings."""
+
+    calls: list[str] = []
+
+    async def fake_openai(*args, **kwargs):
+        calls.append("openai")
+        yield chat_api._sse_text("OpenAI reply")
+        yield chat_api._sse_done()
+
+    async def fake_anthropic(*args, **kwargs):
+        calls.append("anthropic")
+        yield chat_api._sse_text("Anthropic reply")
+        yield chat_api._sse_done()
+
+    monkeypatch.setattr(chat_api, "_stream_openai", fake_openai)
+    monkeypatch.setattr(chat_api, "_stream_anthropic", fake_anthropic)
+
+    chunks = await _collect_chunks(
+        chat_api._stream_chat_response(
+            system="system",
+            messages=[{"role": "user", "content": "What apps currently exist?"}],
+            provider="openai",
+            model="gpt-5.2",
+            anthropic_api_key="anthropic-key",
+            openai_api_key="openai-key",
+        )
+    )
+
+    assert calls == ["openai"]
+    assert chunks == [
+        'data: {"text": "OpenAI reply"}\n\n',
         "data: [DONE]\n\n",
     ]
