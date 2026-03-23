@@ -225,7 +225,7 @@ function App() {
       )}
 
       {activeWindow === "settings" && (
-        <AppWindow title="Settings" onClose={close} width="520px" height="440px">
+        <AppWindow title="Settings" onClose={close} width="920px" height="680px">
           <SettingsView />
         </AppWindow>
       )}

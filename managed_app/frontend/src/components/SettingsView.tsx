@@ -191,7 +191,7 @@ export function SettingsView() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "0.85fr 1.15fr auto", gap: 8, alignItems: "end" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
             <select
@@ -211,7 +211,7 @@ export function SettingsView() {
                   };
                 });
               }}
-              style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
+              style={{ minWidth: 230, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
             >
               <option value="anthropic">Anthropic</option>
               <option value="bedrock">Amazon Bedrock</option>
@@ -219,20 +219,20 @@ export function SettingsView() {
             </select>
           </label>
 
-          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 360px" }}>
             <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
             <input
               type="text"
               value={values.llm_model || ""}
               placeholder={providerModelPlaceholder}
               onChange={(e) => setValues((current) => ({ ...current, llm_model: e.target.value }))}
-              style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              style={{ minWidth: 0, width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
             />
           </label>
 
           <button
             className="refresh-btn"
-            style={{ padding: "6px 12px", ...statusStyles(Boolean(saved.llm_runtime)) }}
+            style={{ padding: "6px 14px", minWidth: 88, ...statusStyles(Boolean(saved.llm_runtime)) }}
             onClick={() => runSave("llm_runtime", async () => {
               await persistSetting("llm_provider", provider);
               await persistSetting("llm_model", (values.llm_model || providerModelPlaceholder).trim());
@@ -254,7 +254,7 @@ export function SettingsView() {
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
           <div style={{ marginBottom: 8 }}>
             <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Anthropic API Key</div>
@@ -262,17 +262,17 @@ export function SettingsView() {
               {anthropicMasked ? `Stored locally as ${anthropicMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_ANTHROPIC_API_KEY."}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input
               type="password"
               placeholder="sk-ant-…"
               value={values.anthropic_api_key || ""}
               onChange={(e) => setValues((current) => ({ ...current, anthropic_api_key: e.target.value }))}
-              style={{ flex: 1, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
             />
             <button
               className="refresh-btn"
-              style={{ padding: "4px 12px", ...statusStyles(Boolean(saved.anthropic_api_key)) }}
+              style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.anthropic_api_key)) }}
               onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", (values.anthropic_api_key || "").trim()).then(() => undefined))}
               disabled={saving.anthropic_api_key || !(values.anthropic_api_key || "").trim()}
             >
@@ -280,7 +280,7 @@ export function SettingsView() {
             </button>
             <button
               className="refresh-btn"
-              style={{ padding: "4px 12px" }}
+              style={{ padding: "4px 12px", minWidth: 84 }}
               onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", "").then(() => undefined))}
               disabled={saving.anthropic_api_key || !anthropicMasked}
             >
@@ -299,17 +299,17 @@ export function SettingsView() {
               {openaiMasked ? `Stored locally as ${openaiMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_OPENAI_API_KEY."}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input
               type="password"
               placeholder="sk-proj-…"
               value={values.openai_api_key || ""}
               onChange={(e) => setValues((current) => ({ ...current, openai_api_key: e.target.value }))}
-              style={{ flex: 1, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
             />
             <button
               className="refresh-btn"
-              style={{ padding: "4px 12px", ...statusStyles(Boolean(saved.openai_api_key)) }}
+              style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.openai_api_key)) }}
               onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", (values.openai_api_key || "").trim()).then(() => undefined))}
               disabled={saving.openai_api_key || !(values.openai_api_key || "").trim()}
             >
@@ -317,7 +317,7 @@ export function SettingsView() {
             </button>
             <button
               className="refresh-btn"
-              style={{ padding: "4px 12px" }}
+              style={{ padding: "4px 12px", minWidth: 84 }}
               onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", "").then(() => undefined))}
               disabled={saving.openai_api_key || !openaiMasked}
             >
