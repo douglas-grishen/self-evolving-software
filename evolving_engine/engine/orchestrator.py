@@ -632,11 +632,16 @@ set of tasks that can be executed across multiple autonomous runs.
   unless the Purpose explicitly requires that domain
 - The desktop shell already exists in `frontend/src/App.tsx` and `frontend/src/App.css`.
   Product apps must run inside that shell via `frontend/src/components/AppViewer.tsx`.
+- The desktop's system windows and onboarding surfaces are platform capabilities. Do not
+  remove Chat, Cost, Settings, Health, Timeline, Purpose, Tasks, Database, or Inceptions
+  while planning product work.
 - Frontend app slices should live under `frontend/src/apps/<AppName>/` and expose a default
   component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
 - Use a stable slug of the desktop app name as the frontend module key, for example
   `Competitive Intelligence` -> `competitive-intelligence`.
 - Do not replace the shell itself when planning or executing product-app work.
+- If a mounted app already has a frontend surface, prioritize keeping its backend contract
+  live with safe empty-state responses over adding more scaffolding behind broken endpoints.
 - If no business app exists yet, the first actionable task must use task_type=create_app
 - task_type=create_app means: register the app shell and then execute the first code slice
 - task_type=evolve means: improve an existing app or add the next thin slice

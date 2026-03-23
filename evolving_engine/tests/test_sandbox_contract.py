@@ -1,8 +1,13 @@
 """Tests for sandbox plan contract validation."""
 
+from pathlib import Path
+
 from engine.context import create_context
 from engine.models.evolution import EvolutionPlan, FileChange, GeneratedFile
-from engine.sandbox.docker_sandbox import _validate_plan_contract
+from engine.sandbox.docker_sandbox import (
+    _validate_plan_contract,
+    _validate_platform_contract_files,
+)
 
 
 def test_contract_requires_generated_migration_when_plan_demands_it():
@@ -154,5 +159,140 @@ def test_contract_allows_desktop_shell_change_when_request_is_explicit():
     )
 
     errors = _validate_plan_contract(ctx)
+
+    assert errors == []
+
+
+def _write(tmp_path: Path, relative_path: str, content: str) -> None:
+    target = tmp_path / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+
+def test_platform_contract_rejects_missing_system_capabilities(tmp_path: Path):
+    """Product work must preserve framework-owned desktop and chat capabilities."""
+    _write(
+        tmp_path,
+        "frontend/src/App.tsx",
+        """
+        export default function App() {
+          return (
+            <>
+              <button onClick={() => toggle("chat")}>Chat</button>
+            </>
+          );
+        }
+        """,
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/AppViewer.tsx",
+        "export function AppViewer() { return <DesktopAppComponent app={app} />; }",
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/ChatView.tsx",
+        'fetch("/api/v1/chat", { body: JSON.stringify({ message: "broken" }) });',
+    )
+    _write(
+        tmp_path,
+        "backend/app/api/v1/chat.py",
+        'router = APIRouter(prefix="/chat")\n@router.post("")\nasync def chat(): pass\n',
+    )
+
+    errors = _validate_platform_contract_files(tmp_path, "Build company discovery app")
+
+    assert any("CostView.tsx" in error for error in errors)
+    assert any("Desktop shell must preserve core system windows" in error for error in errors)
+    assert any("JSON.stringify({ messages: history })" in error for error in errors)
+
+
+def test_platform_contract_requires_backend_contract_for_mounted_competitive_intelligence(tmp_path: Path):
+    """Mounted apps must keep their framework-owned backend contract alive."""
+    _write(
+        tmp_path,
+        "frontend/src/App.tsx",
+        """
+        export default function App() {
+          return (
+            <>
+              <button onClick={() => toggle("inception")}>New Inception</button>
+              <button onClick={() => toggle("inceptions")}>Inceptions</button>
+              <button onClick={() => toggle("timeline")}>Timeline</button>
+              <button onClick={() => toggle("purpose")}>Purpose</button>
+              <button onClick={() => toggle("tasks")}>Tasks</button>
+              <button onClick={() => toggle("chat")}>Chat</button>
+              <button onClick={() => toggle("architecture")}>Architecture</button>
+              <button onClick={() => toggle("database")}>Database</button>
+              <button onClick={() => toggle("cost")}>Cost</button>
+              <button onClick={() => toggle("health")}>Health</button>
+              <button onClick={() => toggle("settings")}>Settings</button>
+              <AppWindow title="✦ Chat with the System" />
+              <AppWindow title="Cost & Usage" />
+            </>
+          );
+        }
+        """,
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/AppViewer.tsx",
+        "import { getDesktopAppComponent } from '../apps/registry';\nexport function AppViewer() { return <DesktopAppComponent app={app} />; }",
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/ChatView.tsx",
+        'fetch("/api/v1/chat", { body: JSON.stringify({ messages: history }) });',
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/CostView.tsx",
+        "export function CostView() { return <>Cost & Usage Spend Telemetry</>; }",
+    )
+    _write(
+        tmp_path,
+        "backend/app/api/v1/chat.py",
+        'from fastapi import APIRouter\nrouter = APIRouter(prefix="/chat")\nclass ChatMessage: ...\nmessages: list[ChatMessage]\n@router.post("")\nasync def chat(): pass\n',
+    )
+    _write(
+        tmp_path,
+        "frontend/src/apps/competitive-intelligence/index.tsx",
+        "export default function CompetitiveIntelligence() { return null; }",
+    )
+
+    errors = _validate_platform_contract_files(tmp_path, "Build competitive intelligence search")
+
+    assert any("competitive_intelligence.py" in error for error in errors)
+
+
+def test_platform_contract_allows_explicit_shell_redesign(tmp_path: Path):
+    """Explicit shell work can bypass menu-marker preservation checks."""
+    _write(
+        tmp_path,
+        "frontend/src/App.tsx",
+        "export default function App() { return <main>custom desktop shell</main>; }",
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/AppViewer.tsx",
+        "import { getDesktopAppComponent } from '../apps/registry';\nexport function AppViewer() { return <DesktopAppComponent app={app} />; }",
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/ChatView.tsx",
+        'fetch("/api/v1/chat", { body: JSON.stringify({ messages: history }) });',
+    )
+    _write(
+        tmp_path,
+        "frontend/src/components/CostView.tsx",
+        "export function CostView() { return <>Cost & Usage Spend Telemetry</>; }",
+    )
+    _write(
+        tmp_path,
+        "backend/app/api/v1/chat.py",
+        'from fastapi import APIRouter\nrouter = APIRouter(prefix="/chat")\nclass ChatMessage: ...\nmessages: list[ChatMessage]\n@router.post("")\nasync def chat(): pass\n',
+    )
+
+    errors = _validate_platform_contract_files(tmp_path, "Redesign desktop shell and window manager")
 
     assert errors == []

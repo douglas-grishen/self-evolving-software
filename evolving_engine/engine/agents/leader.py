@@ -67,12 +67,18 @@ IMPORTANT CONSTRAINTS:
 - Treat `frontend/src/App.tsx` and `frontend/src/App.css` as protected desktop shell
   infrastructure. Do not modify them unless the request explicitly asks to change the
   desktop shell, launcher, menu bar, or window manager itself.
+- Treat the desktop's system windows and onboarding surfaces as platform capabilities, not
+  disposable UI. Preserve Chat, Cost, Settings, Health, Timeline, Purpose, Tasks,
+  Database, and Inceptions unless the request explicitly targets those platform surfaces.
 - Product apps must be implemented under `frontend/src/apps/<AppName>/` and expose a default
   component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
 - Those app modules are mounted inside the existing desktop window system via
   `frontend/src/components/AppViewer.tsx`; do not replace the desktop shell.
 - When registering a desktop app, keep its frontend module key stable by using a slug derived
   from the app name (for example `Competitive Intelligence` -> `competitive-intelligence`).
+- If a product app already has a mounted frontend surface, preserve its backend route contract
+  and prefer returning a safe empty state over leaving the UI with HTTP 404 / missing endpoint
+  failures.
 
 Be precise. Every file that needs to change must be listed. Think step by step."""
 

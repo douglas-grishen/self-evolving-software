@@ -43,10 +43,128 @@ _DESKTOP_SHELL_KEYWORDS = (
     "dock",
 )
 
+_REQUIRED_DESKTOP_MENU_LABELS = (
+    "New Inception",
+    "Inceptions",
+    "Timeline",
+    "Purpose",
+    "Tasks",
+    "Chat",
+    "Architecture",
+    "Database",
+    "Cost",
+    "Health",
+    "Settings",
+)
+
+_REQUIRED_PLATFORM_FILES = {
+    "frontend/src/App.tsx": (
+        "toggle(\"chat\")",
+        "toggle(\"cost\")",
+        'title="✦ Chat with the System"',
+        'title="Cost & Usage"',
+    ),
+    "frontend/src/components/AppViewer.tsx": (
+        "getDesktopAppComponent",
+        "<DesktopAppComponent app={app} />",
+    ),
+    "frontend/src/components/ChatView.tsx": (
+        'fetch("/api/v1/chat"',
+        "JSON.stringify({ messages: history })",
+    ),
+    "frontend/src/components/CostView.tsx": (
+        "Cost & Usage",
+        "Spend Telemetry",
+    ),
+    "backend/app/api/v1/chat.py": (
+        'APIRouter(prefix="/chat"',
+        '@router.post("")',
+        "messages: list[ChatMessage]",
+    ),
+}
+
+_CONDITIONAL_PLATFORM_CONTRACTS = (
+    {
+        "trigger": "frontend/src/apps/competitive-intelligence",
+        "required_file": "backend/app/api/v1/competitive_intelligence.py",
+        "markers": (
+            'APIRouter(prefix="/competitive-intelligence"',
+            '@router.get("/statistics")',
+            '@router.post("/companies/search")',
+        ),
+        "description": "Competitive Intelligence app contract",
+    },
+)
+
 
 def _request_allows_desktop_shell_changes(request_text: str) -> bool:
     text = request_text.lower()
     return any(keyword in text for keyword in _DESKTOP_SHELL_KEYWORDS)
+
+
+def _validate_platform_contract_files(app_path: Path, request_text: str) -> list[str]:
+    """Validate framework-owned platform capabilities that product work must preserve."""
+    errors: list[str] = []
+    allows_shell_change = _request_allows_desktop_shell_changes(request_text)
+
+    for relative_path, markers in _REQUIRED_PLATFORM_FILES.items():
+        file_path = app_path / relative_path
+        if not file_path.exists():
+            errors.append(
+                f"Platform contract violation: required framework file is missing: {relative_path}"
+            )
+            continue
+
+        content = file_path.read_text(encoding="utf-8")
+        effective_markers = markers
+        if allows_shell_change and relative_path == "frontend/src/App.tsx":
+            effective_markers = ()
+
+        missing_markers = [marker for marker in effective_markers if marker not in content]
+        if missing_markers:
+            preview = ", ".join(missing_markers[:4])
+            errors.append(
+                "Platform contract violation: "
+                f"{relative_path} is missing required framework markers: {preview}"
+            )
+
+        if not allows_shell_change and relative_path == "frontend/src/App.tsx":
+            missing_labels = [
+                label for label in _REQUIRED_DESKTOP_MENU_LABELS if label not in content
+            ]
+            if missing_labels:
+                preview = ", ".join(missing_labels[:6])
+                errors.append(
+                    "Desktop shell must preserve core system windows and menu items: "
+                    f"{preview}"
+                )
+
+    for contract in _CONDITIONAL_PLATFORM_CONTRACTS:
+        trigger_path = app_path / contract["trigger"]
+        if not trigger_path.exists():
+            continue
+
+        required_file = app_path / contract["required_file"]
+        if not required_file.exists():
+            errors.append(
+                "Platform contract violation: "
+                f"{contract['description']} is missing required backend file "
+                f"{contract['required_file']}"
+            )
+            continue
+
+        content = required_file.read_text(encoding="utf-8")
+        missing_markers = [
+            marker for marker in contract["markers"] if marker not in content
+        ]
+        if missing_markers:
+            preview = ", ".join(missing_markers[:4])
+            errors.append(
+                "Platform contract violation: "
+                f"{contract['required_file']} is missing required markers: {preview}"
+            )
+
+    return errors
 
 
 def _validate_plan_contract(context: EvolutionContext) -> list[str]:
@@ -144,6 +262,17 @@ class DockerSandbox(BaseSandbox):
                 "Ensure the generator emits every planned file, including required Alembic migrations."
             )
 
+        platform_errors = _validate_platform_contract_files(
+            sandbox_app,
+            context.request.user_request,
+        )
+        if platform_errors:
+            errors.extend(platform_errors)
+            suggestions.append(
+                "Preserve framework-owned platform capabilities such as the desktop shell, chat, "
+                "cost view, and stable backend contracts for mounted apps."
+            )
+
         # Stage 1: Static analysis
         static_ok, static_errors = await self._run_static_analysis(sandbox_app)
         if not static_ok:
@@ -186,6 +315,8 @@ class DockerSandbox(BaseSandbox):
         risk_score = 0.0
         if not static_ok:
             risk_score += 0.2
+        if platform_errors:
+            risk_score += 0.4
         if not build_ok:
             risk_score += 0.5
         elif not alembic_ok:

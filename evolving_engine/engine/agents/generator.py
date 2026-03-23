@@ -100,12 +100,18 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - `frontend/src/App.tsx` and `frontend/src/App.css` define the operating-system-like desktop
   shell. Do NOT replace or repurpose them for a product app unless the request explicitly asks
   to redesign the desktop shell itself.
+- The desktop system windows are framework-owned resilience capabilities. Do NOT remove or break
+  Chat, Cost, Settings, Health, Timeline, Purpose, Tasks, Database, or Inceptions while
+  implementing product work.
 - Product app UIs must be added under `frontend/src/apps/<AppName>/` and export a default
   component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
 - Those app modules are opened through the existing `frontend/src/components/AppViewer.tsx`
   integration point instead of replacing the desktop shell.
 - Match the desktop app's frontend module key to a slug of the app name (for example
   `Competitive Intelligence` -> `competitive-intelligence`) so the shell can launch it reliably.
+- If a mounted app depends on backend endpoints, preserve that route contract. When the data
+  layer is incomplete, return a valid empty-state response rather than leaving the frontend to
+  hit HTTP 404.
 
 Respond with a JSON array of file objects."""
 
