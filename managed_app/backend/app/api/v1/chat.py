@@ -2,23 +2,27 @@
 
 Provides a conversational interface so users can ask anything about
 the self-evolving system: its Purpose, built apps, evolution history,
-what exists, what failed, how it works, etc.
+what exists, what failed, and how it all fits together.
 
-Uses the Anthropic API via direct httpx calls (no SDK dependency).
-Streams the response using Server-Sent Events (SSE).
+Provider strategy:
+  1. Prefer Anthropic when a key is configured in system settings
+  2. Fall back to Amazon Bedrock when Anthropic is unavailable or exhausted
+  3. Return an explicit SSE error message if both providers fail
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import AsyncIterator
 
+import boto3
 import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -30,7 +34,27 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
-_MODEL = "claude-sonnet-4-6"
+_MODEL = os.environ.get("ENGINE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+_BEDROCK_REGION = os.environ.get("ENGINE_BEDROCK_REGION") or os.environ.get(
+    "AWS_REGION",
+    "us-east-1",
+)
+_BEDROCK_MODEL_ID = os.environ.get(
+    "ENGINE_BEDROCK_MODEL_ID",
+    "anthropic.claude-sonnet-4-20250514-v1:0",
+)
+
+
+class ChatProviderError(RuntimeError):
+    """Raised when an upstream chat provider cannot serve the request."""
+
+
+def _sse_text(text: str) -> str:
+    return f"data: {json.dumps({'text': text})}\n\n"
+
+
+def _sse_done() -> str:
+    return "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +201,32 @@ async def _get_api_key(db: AsyncSession) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Streaming generator
+# Provider helpers
 # ---------------------------------------------------------------------------
+
+def _extract_anthropic_error_message(payload: bytes) -> str:
+    """Convert Anthropic error payloads into user-facing messages."""
+    if not payload:
+        return "Anthropic returned an empty error response."
+    try:
+        parsed = json.loads(payload.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return payload.decode("utf-8", "replace")[:500]
+
+    error = parsed.get("error", {})
+    return error.get("message") or parsed.get("message") or "Anthropic returned an unknown error."
+
+
+def _to_bedrock_messages(messages: list[dict]) -> list[dict]:
+    """Translate chat messages into Bedrock Converse message blocks."""
+    return [
+        {
+            "role": message["role"],
+            "content": [{"text": message["content"]}],
+        }
+        for message in messages
+    ]
+
 
 async def _stream_anthropic(api_key: str, system: str, messages: list[dict]) -> AsyncIterator[str]:
     """Call Anthropic API with streaming and yield SSE chunks."""
@@ -197,7 +245,11 @@ async def _stream_anthropic(api_key: str, system: str, messages: list[dict]) -> 
 
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream("POST", _ANTHROPIC_URL, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.is_error:
+                error_payload = await resp.aread()
+                raise ChatProviderError(_extract_anthropic_error_message(error_payload))
+
+            emitted_text = False
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -211,11 +263,67 @@ async def _stream_anthropic(api_key: str, system: str, messages: list[dict]) -> 
                 if data.get("type") == "content_block_delta":
                     text = data.get("delta", {}).get("text", "")
                     if text:
-                        # Yield as SSE
-                        yield f"data: {json.dumps({'text': text})}\n\n"
+                        emitted_text = True
+                        yield _sse_text(text)
                 elif data.get("type") == "message_stop":
-                    yield "data: [DONE]\n\n"
+                    yield _sse_done()
                     return
+
+            if not emitted_text:
+                raise ChatProviderError("Anthropic returned no text.")
+
+
+async def _stream_bedrock(system: str, messages: list[dict]) -> AsyncIterator[str]:
+    """Call Bedrock Converse API and return a single SSE text chunk."""
+    client = boto3.client("bedrock-runtime", region_name=_BEDROCK_REGION)
+
+    try:
+        response = await asyncio.to_thread(
+            client.converse,
+            modelId=_BEDROCK_MODEL_ID,
+            system=[{"text": system}],
+            messages=_to_bedrock_messages(messages),
+            inferenceConfig={"maxTokens": 2048},
+        )
+    except Exception as exc:  # pragma: no cover - exact boto error depends on runtime
+        raise ChatProviderError(str(exc)) from exc
+
+    content = response.get("output", {}).get("message", {}).get("content", [])
+    text = "".join(block.get("text", "") for block in content if isinstance(block, dict))
+    if not text.strip():
+        raise ChatProviderError("Bedrock returned no text.")
+
+    yield _sse_text(text)
+    yield _sse_done()
+
+
+async def _stream_chat_response(
+    *,
+    system: str,
+    messages: list[dict],
+    anthropic_api_key: str,
+) -> AsyncIterator[str]:
+    """Try Anthropic first, then fall back to Bedrock, surfacing real errors."""
+    provider_errors: list[str] = []
+
+    if anthropic_api_key:
+        try:
+            async for chunk in _stream_anthropic(anthropic_api_key, system, messages):
+                yield chunk
+            return
+        except ChatProviderError as exc:
+            provider_errors.append(f"Anthropic: {exc}")
+
+    try:
+        async for chunk in _stream_bedrock(system, messages):
+            yield chunk
+        return
+    except ChatProviderError as exc:
+        provider_errors.append(f"Bedrock: {exc}")
+
+    combined = " ".join(provider_errors) or "No chat provider is configured."
+    yield _sse_text(f"⚠️ Chat is unavailable right now. {combined}")
+    yield _sse_done()
 
 
 # ---------------------------------------------------------------------------
@@ -230,17 +338,14 @@ async def chat(
     """Stream a chat response with full system context."""
     system = await _build_system_prompt(db)
     api_key = await _get_api_key(db)
-
-    if not api_key:
-        async def _no_key():
-            yield 'data: {"text": "⚠️ No Anthropic API key configured. Set it in Settings → Anthropic API Key."}\n\n'
-            yield "data: [DONE]\n\n"
-        return StreamingResponse(_no_key(), media_type="text/event-stream")
-
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     return StreamingResponse(
-        _stream_anthropic(api_key, system, messages),
+        _stream_chat_response(
+            system=system,
+            messages=messages,
+            anthropic_api_key=api_key,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

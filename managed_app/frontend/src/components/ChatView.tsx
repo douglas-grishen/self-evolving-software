@@ -125,10 +125,17 @@ export function ChatView() {
           }
         }
 
-        // Ensure pending is cleared even if no content
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantId ? { ...m, pending: false } : m
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content:
+                    accumulated.trim() ||
+                    "⚠️ The assistant did not return any text. Please try again.",
+                  pending: false,
+                }
+              : m
           )
         );
       } catch (err: unknown) {
