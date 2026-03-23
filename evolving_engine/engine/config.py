@@ -59,7 +59,7 @@ class EngineSettings(BaseSettings):
     # Falls back to main model if not available on the API key
     anthropic_model_fast: str = "claude-sonnet-4-20250514"
     bedrock_region: str = "us-east-1"
-    bedrock_model_id: str = "anthropic.claude-sonnet-4-20250514-v1:0"
+    bedrock_model_id: str = "global.anthropic.claude-sonnet-4-20250514-v1:0"
 
     # ---------------------------------------------------------------------------
     # Generation

@@ -41,8 +41,21 @@ _BEDROCK_REGION = os.environ.get("ENGINE_BEDROCK_REGION") or os.environ.get(
 )
 _BEDROCK_MODEL_ID = os.environ.get(
     "ENGINE_BEDROCK_MODEL_ID",
-    "anthropic.claude-sonnet-4-20250514-v1:0",
+    "global.anthropic.claude-sonnet-4-20250514-v1:0",
 )
+
+
+def _provider_order(anthropic_api_key: str) -> list[str]:
+    """Return provider order, honoring production preference from env."""
+    preferred = os.environ.get("ENGINE_LLM_PROVIDER", "").strip().lower()
+    if preferred == "bedrock":
+        order = ["bedrock", "anthropic"]
+    else:
+        order = ["anthropic", "bedrock"]
+
+    if not anthropic_api_key:
+        return [provider for provider in order if provider != "anthropic"]
+    return order
 
 
 class ChatProviderError(RuntimeError):
@@ -303,23 +316,20 @@ async def _stream_chat_response(
     messages: list[dict],
     anthropic_api_key: str,
 ) -> AsyncIterator[str]:
-    """Try Anthropic first, then fall back to Bedrock, surfacing real errors."""
+    """Try configured providers in order and surface real upstream failures."""
     provider_errors: list[str] = []
 
-    if anthropic_api_key:
+    for provider in _provider_order(anthropic_api_key):
         try:
-            async for chunk in _stream_anthropic(anthropic_api_key, system, messages):
-                yield chunk
+            if provider == "anthropic":
+                async for chunk in _stream_anthropic(anthropic_api_key, system, messages):
+                    yield chunk
+            else:
+                async for chunk in _stream_bedrock(system, messages):
+                    yield chunk
             return
         except ChatProviderError as exc:
-            provider_errors.append(f"Anthropic: {exc}")
-
-    try:
-        async for chunk in _stream_bedrock(system, messages):
-            yield chunk
-        return
-    except ChatProviderError as exc:
-        provider_errors.append(f"Bedrock: {exc}")
+            provider_errors.append(f"{provider.title()}: {exc}")
 
     combined = " ".join(provider_errors) or "No chat provider is configured."
     yield _sse_text(f"⚠️ Chat is unavailable right now. {combined}")

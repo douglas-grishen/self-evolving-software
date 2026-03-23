@@ -68,3 +68,38 @@ async def test_stream_chat_response_surfaces_provider_errors(monkeypatch):
     assert "Anthropic: Your credit balance is too low." in chunks[0]
     assert "Bedrock: Unable to locate credentials." in chunks[0]
     assert chunks[1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_response_prefers_bedrock_when_configured(monkeypatch):
+    """Production can bypass exhausted Anthropic credits and hit Bedrock first."""
+
+    calls: list[str] = []
+
+    async def fake_anthropic(*args, **kwargs):
+        calls.append("anthropic")
+        yield chat_api._sse_text("Anthropic reply")
+        yield chat_api._sse_done()
+
+    async def fake_bedrock(*args, **kwargs):
+        calls.append("bedrock")
+        yield chat_api._sse_text("Bedrock reply")
+        yield chat_api._sse_done()
+
+    monkeypatch.setenv("ENGINE_LLM_PROVIDER", "bedrock")
+    monkeypatch.setattr(chat_api, "_stream_anthropic", fake_anthropic)
+    monkeypatch.setattr(chat_api, "_stream_bedrock", fake_bedrock)
+
+    chunks = await _collect_chunks(
+        chat_api._stream_chat_response(
+            system="system",
+            messages=[{"role": "user", "content": "What apps currently exist?"}],
+            anthropic_api_key="test-key",
+        )
+    )
+
+    assert calls == ["bedrock"]
+    assert chunks == [
+        'data: {"text": "Bedrock reply"}\n\n',
+        "data: [DONE]\n\n",
+    ]
