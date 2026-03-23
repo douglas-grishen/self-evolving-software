@@ -1,6 +1,7 @@
 """Tests for the Orchestrator state machine."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -87,6 +88,45 @@ def test_select_next_backlog_item_skips_unsatisfied_dependencies():
     assert selected.task_key == "foundation"
 
 
+def test_select_next_backlog_item_prefers_high_priority_ready_work():
+    """Pending work should prefer higher-priority ready items over lower-priority siblings."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(item_id="1", task_key="export_csv", sequence=1, priority=BacklogTaskPriority.LOW),
+        _backlog_item(item_id="2", task_key="repair_search", sequence=2, priority=BacklogTaskPriority.HIGH),
+    ]
+
+    selected = orchestrator._select_next_backlog_item(items)
+
+    assert selected is not None
+    assert selected.task_key == "repair_search"
+
+
+def test_select_next_backlog_item_skips_retry_cooldown_and_keeps_moving():
+    """A cooling task should not block another ready task from running."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="repair_search",
+            sequence=1,
+            priority=BacklogTaskPriority.HIGH,
+            retry_after=datetime.now(timezone.utc) + timedelta(minutes=5),
+        ),
+        _backlog_item(
+            item_id="2",
+            task_key="company_export",
+            sequence=2,
+            priority=BacklogTaskPriority.NORMAL,
+        ),
+    ]
+
+    selected = orchestrator._select_next_backlog_item(items)
+
+    assert selected is not None
+    assert selected.task_key == "company_export"
+
+
 @pytest.mark.asyncio
 async def test_peek_actionable_backlog_item_uses_completed_dependencies():
     """Backlog probing should consider done tasks so dependent pending work can resume."""
@@ -141,23 +181,65 @@ def test_finalize_backlog_item_blocks_after_third_failed_attempt():
     reporter = _RecordingReporter()
     orchestrator.event_reporter = reporter
 
-    item = _backlog_item(item_id="2", task_key="api_slice", attempt_count=2)
+    item = _backlog_item(item_id="2", task_key="api_slice", attempt_count=2, failure_streak=2)
     ctx = create_context("Build company search")
     ctx = ctx.fail("relation companies does not exist")
 
     asyncio.run(orchestrator._finalize_backlog_item(item, ctx))
 
-    assert reporter.updates == [
-        (
-            "2",
-            {
-                "status": BacklogTaskStatus.BLOCKED.value,
-                "last_request_id": ctx.request_id,
-                "last_error": "relation companies does not exist",
-                "blocked_reason": "relation companies does not exist",
-            },
-        )
-    ]
+    item_id, payload = reporter.updates[0]
+    assert item_id == "2"
+    assert payload["status"] == BacklogTaskStatus.BLOCKED.value
+    assert payload["last_request_id"] == ctx.request_id
+    assert payload["attempt_count"] == 3
+    assert payload["failure_streak"] == 3
+    assert payload["last_error"] == "relation companies does not exist"
+    assert payload["blocked_reason"] == "relation companies does not exist"
+    assert payload["retry_after"] is None
+    assert payload["started_at"] is None
+    assert payload["completed_at"] is None
+
+
+def test_finalize_backlog_item_adds_retry_cooldown_for_structural_failure():
+    """A first code failure should stay pending with a retry_after backoff."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _RecordingReporter()
+    orchestrator.event_reporter = reporter
+
+    item = _backlog_item(item_id="7", task_key="api_slice")
+    ctx = create_context("Build company search")
+    ctx = ctx.fail("validation failed: endpoint contract mismatch")
+
+    asyncio.run(orchestrator._finalize_backlog_item(item, ctx))
+
+    item_id, payload = reporter.updates[0]
+    assert item_id == "7"
+    assert payload["status"] == BacklogTaskStatus.PENDING.value
+    assert payload["attempt_count"] == 1
+    assert payload["failure_streak"] == 1
+    assert payload["blocked_reason"] is None
+    assert payload["retry_after"] is not None
+
+
+def test_finalize_backlog_item_keeps_transient_failure_pending():
+    """Transient infra errors should cool down instead of immediately increasing structural debt."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _RecordingReporter()
+    orchestrator.event_reporter = reporter
+
+    item = _backlog_item(item_id="8", task_key="api_slice", attempt_count=2, failure_streak=1)
+    ctx = create_context("Build company search")
+    ctx = ctx.fail("503 Service Unavailable from provider")
+
+    asyncio.run(orchestrator._finalize_backlog_item(item, ctx))
+
+    item_id, payload = reporter.updates[0]
+    assert item_id == "8"
+    assert payload["status"] == BacklogTaskStatus.PENDING.value
+    assert payload["attempt_count"] == 3
+    assert payload["failure_streak"] == 0
+    assert payload["blocked_reason"] is None
+    assert payload["retry_after"] is not None
 
 
 def test_finalize_backlog_item_marks_success_done():
@@ -176,9 +258,44 @@ def test_finalize_backlog_item_marks_success_done():
     assert item_id == "9"
     assert payload["status"] == BacklogTaskStatus.DONE.value
     assert payload["last_request_id"] == ctx.request_id
+    assert payload["attempt_count"] == 2
+    assert payload["failure_streak"] == 0
     assert payload["last_error"] is None
     assert payload["blocked_reason"] is None
+    assert payload["retry_after"] is None
     assert "completed_at" in payload
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_backlog_items_requeues_abandoned_in_progress_work():
+    """Stale in-progress items should be released back to pending with a cooldown."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _RecordingReporter()
+    orchestrator.event_reporter = reporter
+    stale_started_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    recovered = await orchestrator._recover_stale_backlog_items(
+        [
+            _backlog_item(
+                item_id="11",
+                task_key="timeline_stub",
+                status=BacklogTaskStatus.IN_PROGRESS,
+                attempt_count=2,
+                failure_streak=1,
+                started_at=stale_started_at,
+            )
+        ]
+    )
+
+    assert recovered is True
+    item_id, payload = reporter.updates[0]
+    assert item_id == "11"
+    assert payload["status"] == BacklogTaskStatus.PENDING.value
+    assert payload["attempt_count"] == 2
+    assert payload["failure_streak"] == 1
+    assert payload["blocked_reason"] is None
+    assert payload["retry_after"] is not None
+    assert payload["started_at"] is None
 
 
 def test_ensure_app_registered_sets_frontend_entry_metadata():
@@ -374,8 +491,12 @@ def _backlog_item(
     task_key: str,
     sequence: int = 1,
     status: BacklogTaskStatus = BacklogTaskStatus.PENDING,
+    priority: BacklogTaskPriority = BacklogTaskPriority.NORMAL,
     depends_on: list[str] | None = None,
     attempt_count: int = 0,
+    failure_streak: int = 0,
+    retry_after: datetime | None = None,
+    started_at: datetime | None = None,
 ) -> BacklogItem:
     return BacklogItem(
         id=item_id,
@@ -384,11 +505,14 @@ def _backlog_item(
         title=task_key.replace("_", " ").title(),
         description="",
         status=status,
-        priority=BacklogTaskPriority.NORMAL,
+        priority=priority,
         sequence=sequence,
         task_type=BacklogTaskType.EVOLVE,
         execution_request="Build the next slice",
         acceptance_criteria=[],
         depends_on=depends_on or [],
         attempt_count=attempt_count,
+        failure_streak=failure_streak,
+        retry_after=retry_after,
+        started_at=started_at,
     )

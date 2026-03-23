@@ -43,9 +43,12 @@ interface BacklogTask {
   blocked_reason: string | null;
   last_request_id: string | null;
   attempt_count: number;
+  failure_streak: number;
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  retry_after: string | null;
+  last_attempted_at: string | null;
   started_at: string | null;
   completed_at: string | null;
 }
@@ -166,9 +169,33 @@ function backlogTimestamp(task: BacklogTask): string {
   return task.started_at || task.updated_at || task.created_at;
 }
 
+function sortBacklog(tasks: BacklogTask[]): BacklogTask[] {
+  const priorityRank: Record<BacklogTask["priority"], number> = {
+    high: 0,
+    normal: 1,
+    low: 2,
+  };
+
+  return [...tasks].sort((a, b) => {
+    const priorityDelta = priorityRank[a.priority] - priorityRank[b.priority];
+    if (priorityDelta !== 0) return priorityDelta;
+    if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+    return new Date(backlogTimestamp(b)).getTime() - new Date(backlogTimestamp(a)).getTime();
+  });
+}
+
+function retryLabel(retryAfter: string | null): string | null {
+  if (!retryAfter) return null;
+  const diffMs = new Date(retryAfter).getTime() - Date.now();
+  if (diffMs <= 0) return "ready to retry";
+  const mins = Math.ceil(diffMs / 60000);
+  return mins <= 1 ? "retry in <1m" : `retry in ${mins}m`;
+}
+
 function BacklogCard({ task }: { task: BacklogTask }) {
   const [expanded, setExpanded] = useState(task.status !== "pending");
   const summary = task.description || task.execution_request;
+  const retryStatus = retryLabel(task.retry_after);
 
   return (
     <div
@@ -187,6 +214,7 @@ function BacklogCard({ task }: { task: BacklogTask }) {
           </span>
           <span className="task-badge">#{task.sequence}</span>
           {task.attempt_count > 0 && <span className="task-badge">{task.attempt_count} attempt{task.attempt_count !== 1 ? "s" : ""}</span>}
+          {retryStatus && <span className="task-badge">{retryStatus}</span>}
           <span className="task-source">⚡ backlog</span>
           <span className="task-time">{timeAgo(backlogTimestamp(task))}</span>
           <span className="task-chevron">{expanded ? "▲" : "▼"}</span>
@@ -225,6 +253,12 @@ function BacklogCard({ task }: { task: BacklogTask }) {
           <div className="task-badges">
             {task.depends_on.length > 0 && (
               <span className="task-badge">depends on {task.depends_on.join(", ")}</span>
+            )}
+            {task.failure_streak > 0 && (
+              <span className="task-badge">failure streak {task.failure_streak}</span>
+            )}
+            {task.retry_after && (
+              <span className="task-badge">retry at {new Date(task.retry_after).toLocaleTimeString()}</span>
             )}
             {task.last_request_id && <span className="task-badge">request {task.last_request_id.slice(0, 8)}</span>}
           </div>
@@ -301,9 +335,9 @@ function EventCard({ ev }: { ev: EvolutionEvent }) {
 export function TasksView() {
   const { backlog, events, loading, error } = useTaskData(5000);
 
-  const inProgress = backlog.filter((task) => task.status === "in_progress");
-  const pending = backlog.filter((task) => task.status === "pending");
-  const blocked = backlog.filter((task) => task.status === "blocked");
+  const inProgress = sortBacklog(backlog.filter((task) => task.status === "in_progress"));
+  const pending = sortBacklog(backlog.filter((task) => task.status === "pending"));
+  const blocked = sortBacklog(backlog.filter((task) => task.status === "blocked"));
   const failed = events.filter((event) => event.status === "failed");
   const completed = events.filter((event) => event.status === "completed");
 

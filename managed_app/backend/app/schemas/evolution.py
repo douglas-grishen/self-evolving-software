@@ -179,8 +179,11 @@ class BacklogItemUpdate(BaseModel):
     source: Optional[str] = None
     last_request_id: Optional[str] = None
     attempt_count: Optional[int] = None
+    failure_streak: Optional[int] = None
     last_error: Optional[str] = None
     blocked_reason: Optional[str] = None
+    retry_after: Optional[datetime] = None
+    last_attempted_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
@@ -190,9 +193,12 @@ class BacklogItemResponse(BacklogItemBase):
     purpose_version: int
     last_request_id: Optional[str] = None
     attempt_count: int = 0
+    failure_streak: int = 0
     last_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    retry_after: Optional[datetime] = None
+    last_attempted_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 

@@ -28,7 +28,7 @@ import asyncio
 import hashlib
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import structlog
@@ -47,6 +47,7 @@ from engine.models.backlog import (
     BacklogAppSpec,
     BacklogItem,
     BacklogPlannerResponse,
+    BacklogTaskPriority,
     BacklogTaskStatus,
     BacklogTaskType,
 )
@@ -71,6 +72,29 @@ _MAX_CONCURRENT_EVOLUTIONS = 1
 # Proactive analysis runs at most once every 60 minutes (unless manually triggered)
 _PROACTIVE_INTERVAL_SECONDS = 60 * 60  # 60 minutes
 _CONTROL_PLANE_RETRY_SECONDS = 10
+_BACKLOG_STALE_IN_PROGRESS_SECONDS = 90 * 60
+_BACKLOG_BLOCK_AFTER_FAILURES = 3
+_BACKLOG_BLOCK_AFTER_TOTAL_ATTEMPTS = 6
+_BACKLOG_TRANSIENT_RETRY_SECONDS = 5 * 60
+_BACKLOG_STRUCTURAL_RETRY_SCHEDULE_SECONDS = {
+    1: 5 * 60,
+    2: 30 * 60,
+}
+_BACKLOG_PRIORITY_ORDER = {
+    BacklogTaskPriority.HIGH.value: 0,
+    BacklogTaskPriority.NORMAL.value: 1,
+    BacklogTaskPriority.LOW.value: 2,
+}
+_TRANSIENT_BACKLOG_ERROR_PATTERNS = (
+    re.compile(r"timed?\s*out", re.IGNORECASE),
+    re.compile(r"temporar(?:ily)? unavailable", re.IGNORECASE),
+    re.compile(r"connection (?:refused|reset|error|closed)", re.IGNORECASE),
+    re.compile(r"(?:502|503|504)\b"),
+    re.compile(r"rate limit|throttl", re.IGNORECASE),
+    re.compile(r"backend .* unavailable", re.IGNORECASE),
+    re.compile(r"control[_ -]?plane .* unavailable", re.IGNORECASE),
+    re.compile(r"network", re.IGNORECASE),
+)
 
 
 def _frontend_entry_key(app_name: str) -> str:
@@ -674,6 +698,14 @@ class Orchestrator:
                 logger.warning("proactive.backlog_unavailable")
                 return False
 
+            if await self._recover_stale_backlog_items(existing_backlog):
+                refreshed_backlog = await self.event_reporter.fetch_backlog(
+                    purpose_version=self.purpose.version,
+                    include_completed=True,
+                )
+                if refreshed_backlog is not None:
+                    existing_backlog = refreshed_backlog
+
             backlog_summary = self._format_backlog_for_prompt(existing_backlog)
             purpose_yaml = self.purpose.to_yaml_string()
             cache_input = (
@@ -711,7 +743,19 @@ class Orchestrator:
 
             next_item = self._select_next_backlog_item(backlog_items)
             if next_item is None:
-                logger.info("proactive.backlog_complete", purpose_version=self.purpose.version)
+                non_terminal_count = sum(
+                    1
+                    for item in backlog_items
+                    if item.status not in {BacklogTaskStatus.DONE, BacklogTaskStatus.ABANDONED}
+                )
+                if non_terminal_count == 0:
+                    logger.info("proactive.backlog_complete", purpose_version=self.purpose.version)
+                else:
+                    logger.info(
+                        "proactive.backlog_waiting",
+                        purpose_version=self.purpose.version,
+                        non_terminal_count=non_terminal_count,
+                    )
                 return True
 
             logger.info(
@@ -757,6 +801,9 @@ set of tasks that can be executed across multiple autonomous runs.
 - Keep the backlog small: 0 to 5 tasks maximum
 - Use stable snake_case task_key values when the task intent remains the same
 - Each task must be small enough for a single code-generation cycle, usually 3-5 files
+- Use priority=high for broken user-visible journeys, missing runtime contracts, or safety fixes
+- Use priority=normal for the next core product slice
+- Use priority=low for polish, exports, and secondary improvements
 - Prefer a vertical slice that becomes visible to the user over backend-only scaffolding
 - If at least one business app exists, deepen it before inventing another app
 - Do NOT propose System Monitor, Evolution Monitor, Health Monitor, or other meta-apps
@@ -779,6 +826,8 @@ set of tasks that can be executed across multiple autonomous runs.
 - Mark status=done only when the codebase/apps clearly satisfy the task already
 - Mark status=blocked only when a dependency or repeated failure truly prevents progress
 - When a task is blocked, set blocked_reason and shrink later tasks accordingly
+- Prefer at least one independent follow-up task when possible, so the backlog can keep moving
+  if another task enters retry cooldown or becomes blocked
 - Include acceptance criteria that can be validated after the cycle
 - Use depends_on with task_key references when a task must wait on another one
 
@@ -828,27 +877,46 @@ set of tasks that can be executed across multiple autonomous runs.
                 lines.append(f"  last_error: {item.last_error[:220]}")
             if item.blocked_reason:
                 lines.append(f"  blocked_reason: {item.blocked_reason[:220]}")
+            if item.failure_streak:
+                lines.append(f"  failure_streak: {item.failure_streak}")
+            if item.retry_after:
+                lines.append(f"  retry_after: {item.retry_after.isoformat()}")
         return "\n".join(lines)
 
     def _select_next_backlog_item(self, items: list[BacklogItem]) -> BacklogItem | None:
-        """Pick the next actionable backlog item, preferring resumed work."""
+        """Pick the next actionable backlog item, preferring resumed work and ready retries."""
         if not items:
             return None
 
-        ordered = sorted(items, key=lambda item: (item.sequence, item.created_at or datetime.min))
+        now = datetime.now(timezone.utc)
+        ordered = sorted(items, key=lambda item: self._backlog_sort_key(item))
         completed_keys = {
             item.task_key
             for item in ordered
             if item.status == BacklogTaskStatus.DONE
         }
 
-        for preferred_status in (BacklogTaskStatus.IN_PROGRESS, BacklogTaskStatus.PENDING):
-            for item in ordered:
-                if item.status != preferred_status:
-                    continue
-                if all(dep in completed_keys for dep in item.depends_on):
-                    return item
+        for item in ordered:
+            if item.status not in {BacklogTaskStatus.IN_PROGRESS, BacklogTaskStatus.PENDING}:
+                continue
+            if not all(dep in completed_keys for dep in item.depends_on):
+                continue
+            if item.retry_after and item.retry_after > now:
+                continue
+            return item
         return None
+
+    def _backlog_sort_key(self, item: BacklogItem) -> tuple[int, int, int, datetime]:
+        """Order backlog work by runtime readiness, then planner intent."""
+        status_rank = 0 if item.status == BacklogTaskStatus.IN_PROGRESS else 1
+        priority_value = (
+            item.priority.value
+            if isinstance(item.priority, BacklogTaskPriority)
+            else str(item.priority)
+        )
+        priority_rank = _BACKLOG_PRIORITY_ORDER.get(priority_value, 1)
+        created_at = item.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        return (status_rank, priority_rank, item.sequence, created_at)
 
     async def _peek_actionable_backlog_item(self) -> BacklogItem | None:
         """Return the next actionable backlog item without mutating planner state."""
@@ -881,8 +949,9 @@ set of tasks that can be executed across multiple autonomous runs.
                 "status": BacklogTaskStatus.IN_PROGRESS.value,
                 "last_request_id": ctx.request_id,
                 "attempt_count": item.attempt_count + 1,
-                "last_error": None,
+                "retry_after": None,
                 "blocked_reason": None,
+                "last_attempted_at": now,
                 "started_at": now,
                 "completed_at": None,
             },
@@ -985,22 +1054,15 @@ set of tasks that can be executed across multiple autonomous runs.
     ) -> None:
         """Persist a failed backlog attempt that never reached the pipeline."""
         attempt_count = item.attempt_count + 1
-        next_status = (
-            BacklogTaskStatus.BLOCKED
-            if attempt_count >= 3
-            else BacklogTaskStatus.PENDING
+        payload = self._build_backlog_failure_payload(
+            item=item,
+            request_id=request_id,
+            error_message=error_message,
+            attempt_count=attempt_count,
         )
         await self.event_reporter.update_backlog_item(
             item.id,
-            {
-                "status": next_status.value,
-                "last_request_id": request_id,
-                "attempt_count": attempt_count,
-                "last_error": error_message[:2000],
-                "blocked_reason": error_message[:500]
-                if next_status == BacklogTaskStatus.BLOCKED
-                else None,
-            },
+            payload,
         )
 
     async def _finalize_backlog_item(self, item: BacklogItem, ctx: EvolutionContext) -> None:
@@ -1011,8 +1073,11 @@ set of tasks that can be executed across multiple autonomous runs.
                 {
                     "status": BacklogTaskStatus.DONE.value,
                     "last_request_id": ctx.request_id,
+                    "attempt_count": item.attempt_count + 1,
+                    "failure_streak": 0,
                     "last_error": None,
                     "blocked_reason": None,
+                    "retry_after": None,
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -1020,21 +1085,15 @@ set of tasks that can be executed across multiple autonomous runs.
 
         error_message = self._summarize_backlog_failure(ctx)
         attempt_count = item.attempt_count + 1
-        next_status = (
-            BacklogTaskStatus.BLOCKED
-            if attempt_count >= 3
-            else BacklogTaskStatus.PENDING
+        payload = self._build_backlog_failure_payload(
+            item=item,
+            request_id=ctx.request_id,
+            error_message=error_message,
+            attempt_count=attempt_count,
         )
         await self.event_reporter.update_backlog_item(
             item.id,
-            {
-                "status": next_status.value,
-                "last_request_id": ctx.request_id,
-                "last_error": error_message[:2000],
-                "blocked_reason": error_message[:500]
-                if next_status == BacklogTaskStatus.BLOCKED
-                else None,
-            },
+            payload,
         )
 
     def _summarize_backlog_failure(self, ctx: EvolutionContext) -> str:
@@ -1047,6 +1106,113 @@ set of tasks that can be executed across multiple autonomous runs.
         if not parts:
             return "Evolution failed without a structured error message"
         return "\n".join(parts)
+
+    def _build_backlog_failure_payload(
+        self,
+        *,
+        item: BacklogItem,
+        request_id: str,
+        error_message: str,
+        attempt_count: int,
+    ) -> dict[str, str | int | None]:
+        """Compute retry state for a failed backlog attempt."""
+        now = datetime.now(timezone.utc)
+        transient = self._is_transient_backlog_failure(error_message)
+
+        if transient:
+            next_status = (
+                BacklogTaskStatus.BLOCKED
+                if attempt_count >= _BACKLOG_BLOCK_AFTER_TOTAL_ATTEMPTS
+                else BacklogTaskStatus.PENDING
+            )
+            failure_streak = 0
+            retry_after = (
+                None
+                if next_status == BacklogTaskStatus.BLOCKED
+                else now + timedelta(seconds=_BACKLOG_TRANSIENT_RETRY_SECONDS)
+            )
+        else:
+            failure_streak = item.failure_streak + 1
+            next_status = (
+                BacklogTaskStatus.BLOCKED
+                if failure_streak >= _BACKLOG_BLOCK_AFTER_FAILURES
+                else BacklogTaskStatus.PENDING
+            )
+            retry_after = (
+                None
+                if next_status == BacklogTaskStatus.BLOCKED
+                else now + timedelta(seconds=self._structural_retry_delay_seconds(failure_streak))
+            )
+
+        return {
+            "status": next_status.value,
+            "last_request_id": request_id,
+            "attempt_count": attempt_count,
+            "failure_streak": failure_streak,
+            "last_error": error_message[:2000],
+            "blocked_reason": error_message[:500]
+            if next_status == BacklogTaskStatus.BLOCKED
+            else None,
+            "retry_after": retry_after.isoformat() if retry_after else None,
+            "started_at": None,
+            "completed_at": None,
+        }
+
+    def _structural_retry_delay_seconds(self, failure_streak: int) -> int:
+        """Back off more aggressively for likely code defects than transient infra blips."""
+        return _BACKLOG_STRUCTURAL_RETRY_SCHEDULE_SECONDS.get(
+            failure_streak,
+            max(_BACKLOG_STRUCTURAL_RETRY_SCHEDULE_SECONDS.values()),
+        )
+
+    def _is_transient_backlog_failure(self, error_message: str) -> bool:
+        """Detect retryable infra/provider issues that should not immediately block product work."""
+        return any(pattern.search(error_message) for pattern in _TRANSIENT_BACKLOG_ERROR_PATTERNS)
+
+    async def _recover_stale_backlog_items(self, items: list[BacklogItem]) -> bool:
+        """Release abandoned in-progress leases so the backlog can continue advancing."""
+        if not items:
+            return False
+
+        now = datetime.now(timezone.utc)
+        recovered = False
+        for item in items:
+            if item.status != BacklogTaskStatus.IN_PROGRESS or item.started_at is None:
+                continue
+
+            age_seconds = (now - item.started_at).total_seconds()
+            if age_seconds < _BACKLOG_STALE_IN_PROGRESS_SECONDS:
+                continue
+
+            retry_after = now + timedelta(seconds=_BACKLOG_TRANSIENT_RETRY_SECONDS)
+            error_message = (
+                "Recovered stale in_progress task after "
+                f"{int(age_seconds // 60)} minutes without completion"
+            )
+            await self.event_reporter.update_backlog_item(
+                item.id,
+                {
+                    "status": BacklogTaskStatus.PENDING.value,
+                    "attempt_count": item.attempt_count,
+                    "failure_streak": item.failure_streak,
+                    "last_error": error_message,
+                    "blocked_reason": None,
+                    "retry_after": retry_after.isoformat(),
+                    "started_at": None,
+                    "completed_at": None,
+                    "last_request_id": item.last_request_id,
+                    "last_attempted_at": (item.last_attempted_at or item.started_at).isoformat(),
+                },
+            )
+            logger.warning(
+                "proactive.backlog_stale_recovered",
+                item_id=item.id,
+                task_key=item.task_key,
+                age_minutes=int(age_seconds // 60),
+            )
+            recovered = True
+
+        return recovered
 
     async def _fetch_apps_summary(self) -> tuple[str, bool, int]:
         """Fetch the list of existing apps from the backend for the proactive analyzer."""

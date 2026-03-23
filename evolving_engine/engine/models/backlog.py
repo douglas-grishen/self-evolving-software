@@ -72,8 +72,11 @@ class BacklogItem(BacklogPlanItem):
     purpose_version: int
     last_request_id: str | None = None
     attempt_count: int = 0
+    failure_streak: int = 0
     last_error: str | None = None
+    retry_after: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    last_attempted_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
