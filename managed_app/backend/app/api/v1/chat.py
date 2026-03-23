@@ -423,8 +423,19 @@ def _to_bedrock_messages(messages: list[dict]) -> list[dict]:
 
 
 def _to_openai_messages(system: str, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Translate chat history into OpenAI chat-completions messages."""
-    return [{"role": "developer", "content": system}] + messages
+    """Translate chat history into a compact transcript for the Responses API."""
+    transcript_lines = []
+    for message in messages:
+        role = message.get("role", "user").upper()
+        content = message.get("content", "").strip()
+        if content:
+            transcript_lines.append(f"{role}: {content}")
+
+    transcript = "\n\n".join(transcript_lines).strip()
+    if not transcript:
+        transcript = "USER: Hello."
+
+    return [{"role": "user", "content": transcript}]
 
 
 async def _stream_anthropic(
@@ -514,7 +525,7 @@ async def _stream_openai(
     *,
     model: str,
 ) -> AsyncIterator[str]:
-    """Call OpenAI Chat Completions API and stream SSE chunks."""
+    """Call OpenAI Responses API and emit a single SSE text chunk."""
     try:
         from openai import AsyncOpenAI
     except Exception as exc:  # pragma: no cover - depends on installed environment
@@ -523,25 +534,19 @@ async def _stream_openai(
     client = AsyncOpenAI(api_key=api_key)
 
     try:
-        stream = await client.chat.completions.create(
+        response = await client.responses.create(
             model=model,
-            messages=_to_openai_messages(system, messages),
-            stream=True,
+            instructions=system,
+            input=_to_openai_messages(system, messages),
         )
     except Exception as exc:  # pragma: no cover - exact SDK errors depend on runtime
         raise ChatProviderError(str(exc)) from exc
 
-    emitted_text = False
-    async for chunk in stream:
-        for choice in chunk.choices:
-            delta = choice.delta.content or ""
-            if delta:
-                emitted_text = True
-                yield _sse_text(delta)
-
-    if not emitted_text:
+    text = (response.output_text or "").strip()
+    if not text:
         raise ChatProviderError("OpenAI returned no text.")
 
+    yield _sse_text(text)
     yield _sse_done()
 
 
