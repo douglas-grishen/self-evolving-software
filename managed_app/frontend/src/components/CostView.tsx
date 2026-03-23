@@ -9,6 +9,55 @@ interface Setting {
   updated_at: string;
 }
 
+type ProviderKey = "anthropic" | "bedrock" | "openai";
+
+const RUNTIME_KEYS = {
+  chat: {
+    provider: "chat_llm_provider",
+    model: "chat_llm_model",
+  },
+  engine: {
+    provider: "engine_llm_provider",
+    model: "engine_llm_model",
+  },
+} as const;
+
+function defaultModelForProvider(provider: ProviderKey): string {
+  switch (provider) {
+    case "bedrock":
+      return "global.anthropic.claude-sonnet-4-20250514-v1:0";
+    case "openai":
+      return "gpt-5.2";
+    default:
+      return "claude-sonnet-4-20250514";
+  }
+}
+
+function normalizeProvider(value: string | undefined): ProviderKey {
+  if (value === "bedrock" || value === "openai") return value;
+  return "anthropic";
+}
+
+function resolveRuntimeProvider(settings: Setting[], scope: keyof typeof RUNTIME_KEYS): ProviderKey {
+  const scoped = settings.find((setting) => setting.key === RUNTIME_KEYS[scope].provider)?.value;
+  const legacy = settings.find((setting) => setting.key === "llm_provider")?.value;
+  return normalizeProvider(scoped || legacy);
+}
+
+function resolveRuntimeModel(
+  settings: Setting[],
+  scope: keyof typeof RUNTIME_KEYS,
+  provider: ProviderKey,
+): string {
+  const scoped = settings.find((setting) => setting.key === RUNTIME_KEYS[scope].model)?.value?.trim();
+  if (scoped) return scoped;
+
+  const legacy = settings.find((setting) => setting.key === "llm_model")?.value?.trim();
+  if (legacy) return legacy;
+
+  return defaultModelForProvider(provider);
+}
+
 function CostStat({
   label,
   value,
@@ -75,18 +124,12 @@ export function CostView() {
     () => settings.find((setting) => setting.key === "openai_api_key"),
     [settings],
   );
-  const providerSetting = useMemo(
-    () => settings.find((setting) => setting.key === "llm_provider"),
-    [settings],
-  );
-  const modelSetting = useMemo(
-    () => settings.find((setting) => setting.key === "llm_model"),
-    [settings],
-  );
   const anthropicConfigured = Boolean(anthropicSetting?.value);
   const openaiConfigured = Boolean(openaiSetting?.value);
-  const activeProvider = providerSetting?.value || "anthropic";
-  const activeModel = modelSetting?.value || "Unknown";
+  const chatProvider = useMemo(() => resolveRuntimeProvider(settings, "chat"), [settings]);
+  const chatModel = useMemo(() => resolveRuntimeModel(settings, "chat", chatProvider), [chatProvider, settings]);
+  const engineProvider = useMemo(() => resolveRuntimeProvider(settings, "engine"), [settings]);
+  const engineModel = useMemo(() => resolveRuntimeModel(settings, "engine", engineProvider), [engineProvider, settings]);
 
   const failedRate = useMemo(() => {
     if (!status || status.total_evolutions === 0) return "0%";
@@ -109,7 +152,7 @@ export function CostView() {
         <p style={{ margin: 0, color: "#8b8f97", fontSize: "0.82rem", lineHeight: 1.5 }}>
           This tab was restored as a runtime cost surface. The current open-source build does not
           expose dollar-denominated spend or token telemetry yet, so it shows the signals that do
-          exist: release state, evolution volume, and provider configuration.
+          exist: release state, evolution volume, and runtime configuration.
         </p>
       </div>
 
@@ -150,12 +193,14 @@ export function CostView() {
           </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, color: "#cbd5e1", fontSize: "0.82rem" }}>
               <div>
-              Active provider:
-              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{activeProvider}</strong>
+              Chat runtime:
+              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{chatProvider}</strong>
+              <span style={{ marginLeft: 6, color: "#94a3b8" }}>{chatModel}</span>
             </div>
             <div>
-              Active model:
-              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{activeModel}</strong>
+              Engine runtime:
+              <strong style={{ marginLeft: 6, color: "#e5e7eb" }}>{engineProvider}</strong>
+              <span style={{ marginLeft: 6, color: "#94a3b8" }}>{engineModel}</span>
             </div>
             <div>
               Anthropic key:
@@ -171,8 +216,8 @@ export function CostView() {
             </div>
             <div>
               Bedrock runtime:
-              <strong style={{ marginLeft: 6, color: activeProvider === "bedrock" ? "#86efac" : "#94a3b8" }}>
-                {activeProvider === "bedrock" ? "Selected" : "Standby"}
+              <strong style={{ marginLeft: 6, color: chatProvider === "bedrock" || engineProvider === "bedrock" ? "#86efac" : "#94a3b8" }}>
+                {chatProvider === "bedrock" || engineProvider === "bedrock" ? "Selected" : "Standby"}
               </strong>
             </div>
             <div>

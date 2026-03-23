@@ -8,8 +8,19 @@ interface Setting {
 }
 
 type ProviderKey = "anthropic" | "bedrock" | "openai";
+type RuntimeScope = "chat" | "engine";
 
 const SECRET_KEYS = new Set(["anthropic_api_key", "openai_api_key"]);
+const RUNTIME_KEYS: Record<RuntimeScope, { provider: string; model: string }> = {
+  chat: {
+    provider: "chat_llm_provider",
+    model: "chat_llm_model",
+  },
+  engine: {
+    provider: "engine_llm_provider",
+    model: "engine_llm_model",
+  },
+};
 
 function defaultModelForProvider(provider: ProviderKey): string {
   switch (provider) {
@@ -25,6 +36,48 @@ function defaultModelForProvider(provider: ProviderKey): string {
 function normalizeProvider(value: string | undefined): ProviderKey {
   if (value === "bedrock" || value === "openai") return value;
   return "anthropic";
+}
+
+function getRuntimeProvider(values: Record<string, string>, scope: RuntimeScope): ProviderKey {
+  return normalizeProvider(values[RUNTIME_KEYS[scope].provider] || values.llm_provider);
+}
+
+function getRuntimeModel(
+  values: Record<string, string>,
+  scope: RuntimeScope,
+  provider: ProviderKey,
+): string {
+  const scoped = (values[RUNTIME_KEYS[scope].model] || "").trim();
+  if (scoped) return scoped;
+
+  const legacy = (values.llm_model || "").trim();
+  if (legacy) return legacy;
+
+  return defaultModelForProvider(provider);
+}
+
+function runtimeTitle(scope: RuntimeScope): string {
+  return scope === "chat" ? "Chat Runtime" : "Self-Evolution Runtime";
+}
+
+function runtimeDescription(scope: RuntimeScope): string {
+  return scope === "chat"
+    ? "Used by the Chat app immediately."
+    : "Used by the autonomous engine on the next control-loop cycle.";
+}
+
+function runtimeProviderHelp(scope: RuntimeScope, provider: ProviderKey): string {
+  if (provider === "bedrock") {
+    return "Bedrock uses the instance IAM role. The model field expects a Bedrock model ID or inference profile.";
+  }
+  if (provider === "openai") {
+    return scope === "chat"
+      ? "Chat requests will use OpenAI with the shared key below when present; otherwise ENGINE_OPENAI_API_KEY."
+      : "The engine will use OpenAI with the shared key below when present; otherwise ENGINE_OPENAI_API_KEY.";
+  }
+  return scope === "chat"
+    ? "Chat requests will use Anthropic with the shared key below when present; otherwise ENGINE_ANTHROPIC_API_KEY."
+    : "The engine will use Anthropic with the shared key below when present; otherwise ENGINE_ANTHROPIC_API_KEY.";
 }
 
 function IntervalDisplay({ minutes }: { minutes: number }) {
@@ -120,6 +173,28 @@ export function SettingsView() {
     }
   };
 
+  const saveRuntime = async (scope: RuntimeScope, provider: ProviderKey, model: string) => {
+    const keys = RUNTIME_KEYS[scope];
+    await persistSetting(keys.provider, provider);
+    await persistSetting(keys.model, model.trim() || defaultModelForProvider(provider));
+  };
+
+  const updateRuntimeProvider = (scope: RuntimeScope, nextProvider: ProviderKey) => {
+    const keys = RUNTIME_KEYS[scope];
+    setValues((current) => {
+      const currentProvider = getRuntimeProvider(current, scope);
+      const currentModel = getRuntimeModel(current, scope, currentProvider);
+      const nextModel = !currentModel || currentModel === defaultModelForProvider(currentProvider)
+        ? defaultModelForProvider(nextProvider)
+        : currentModel;
+      return {
+        ...current,
+        [keys.provider]: nextProvider,
+        [keys.model]: nextModel,
+      };
+    });
+  };
+
   const lastUpdated = (() => {
     if (settings.length === 0) return null;
     return settings.reduce((latest, setting) => (
@@ -129,17 +204,19 @@ export function SettingsView() {
 
   if (loading) return <div className="empty-state">Loading settings…</div>;
 
-  const provider = normalizeProvider(values.llm_provider);
+  const chatProvider = getRuntimeProvider(values, "chat");
+  const chatModel = getRuntimeModel(values, "chat", chatProvider);
+  const engineProvider = getRuntimeProvider(values, "engine");
+  const engineModel = getRuntimeModel(values, "engine", engineProvider);
   const intervalMinutes = parseInt(values.proactive_interval_minutes || "60", 10);
-  const providerModelPlaceholder = defaultModelForProvider(provider);
   const anthropicMasked = settings.find((setting) => setting.key === "anthropic_api_key")?.value || "";
   const openaiMasked = settings.find((setting) => setting.key === "openai_api_key")?.value || "";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <p style={{ margin: 0, fontSize: "0.8rem", color: "#888", lineHeight: 1.5 }}>
-        Runtime configuration for the self-evolving engine. Chat uses these changes immediately.
-        The autonomous engine picks them up on the next control-loop cycle.
+        Chat and self-evolution now have separate runtime selection. You can choose different
+        providers and models for each one while reusing the same provider API keys below.
       </p>
 
       <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
@@ -183,75 +260,71 @@ export function SettingsView() {
         )}
       </div>
 
-      <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>LLM Runtime</div>
-          <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
-            Choose the provider and active model used by chat and the self-evolution engine.
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
-            <select
-              value={provider}
-              onChange={(e) => {
-                const nextProvider = normalizeProvider(e.target.value);
-                setValues((current) => {
-                  const currentProvider = normalizeProvider(current.llm_provider);
-                  const currentModel = (current.llm_model || "").trim();
-                  const nextModel = !currentModel || currentModel === defaultModelForProvider(currentProvider)
-                    ? defaultModelForProvider(nextProvider)
-                    : currentModel;
-                  return {
-                    ...current,
-                    llm_provider: nextProvider,
-                    llm_model: nextModel,
-                  };
-                });
-              }}
-              style={{ minWidth: 230, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
-            >
-              <option value="anthropic">Anthropic</option>
-              <option value="bedrock">Amazon Bedrock</option>
-              <option value="openai">OpenAI</option>
-            </select>
-          </label>
-
-          <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 360px" }}>
-            <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
-            <input
-              type="text"
-              value={values.llm_model || ""}
-              placeholder={providerModelPlaceholder}
-              onChange={(e) => setValues((current) => ({ ...current, llm_model: e.target.value }))}
-              style={{ minWidth: 0, width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
-            />
-          </label>
-
-          <button
-            className="refresh-btn"
-            style={{ padding: "6px 14px", minWidth: 88, ...statusStyles(Boolean(saved.llm_runtime)) }}
-            onClick={() => runSave("llm_runtime", async () => {
-              await persistSetting("llm_provider", provider);
-              await persistSetting("llm_model", (values.llm_model || providerModelPlaceholder).trim());
-            })}
-            disabled={saving.llm_runtime}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
+        {([
+          ["chat", chatProvider, chatModel],
+          ["engine", engineProvider, engineModel],
+        ] as [RuntimeScope, ProviderKey, string][]).map(([scope, provider, model]) => (
+          <div
+            key={scope}
+            style={{
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.07)",
+              borderRadius: 10,
+              padding: "14px 16px",
+            }}
           >
-            {saved.llm_runtime ? "✓ Saved" : saving.llm_runtime ? "…" : "Save"}
-          </button>
-        </div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>{runtimeTitle(scope)}</div>
+              <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+                {runtimeDescription(scope)}
+              </div>
+            </div>
 
-        <div style={{ marginTop: 10, fontSize: "0.75rem", color: "#666", lineHeight: 1.5 }}>
-          {provider === "bedrock" && "Bedrock uses the instance IAM role. The model field expects a Bedrock model ID or inference profile."}
-          {provider === "anthropic" && "Anthropic uses the key below when set; otherwise it falls back to ENGINE_ANTHROPIC_API_KEY."}
-          {provider === "openai" && "OpenAI uses the key below when set; otherwise it falls back to ENGINE_OPENAI_API_KEY."}
-        </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
+                <select
+                  value={provider}
+                  onChange={(e) => updateRuntimeProvider(scope, normalizeProvider(e.target.value))}
+                  style={{ minWidth: 200, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
+                >
+                  <option value="anthropic">Anthropic</option>
+                  <option value="bedrock">Amazon Bedrock</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </label>
 
-        {errors.llm_runtime && (
-          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.llm_runtime}</div>
-        )}
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 280px" }}>
+                <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
+                <input
+                  type="text"
+                  value={values[RUNTIME_KEYS[scope].model] ?? model}
+                  placeholder={defaultModelForProvider(provider)}
+                  onChange={(e) => setValues((current) => ({ ...current, [RUNTIME_KEYS[scope].model]: e.target.value }))}
+                  style={{ minWidth: 0, width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                />
+              </label>
+
+              <button
+                className="refresh-btn"
+                style={{ padding: "6px 14px", minWidth: 88, ...statusStyles(Boolean(saved[`${scope}_runtime`])) }}
+                onClick={() => runSave(`${scope}_runtime`, () => saveRuntime(scope, provider, values[RUNTIME_KEYS[scope].model] || model))}
+                disabled={saving[`${scope}_runtime`]}
+              >
+                {saved[`${scope}_runtime`] ? "✓ Saved" : saving[`${scope}_runtime`] ? "…" : "Save"}
+              </button>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: "0.75rem", color: "#666", lineHeight: 1.5 }}>
+              {runtimeProviderHelp(scope, provider)}
+            </div>
+
+            {errors[`${scope}_runtime`] && (
+              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors[`${scope}_runtime`]}</div>
+            )}
+          </div>
+        ))}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>

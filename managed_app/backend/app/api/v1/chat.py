@@ -5,7 +5,7 @@ the self-evolving system: its Purpose, built apps, evolution history,
 what exists, what failed, and how it all fits together.
 
 Provider strategy:
-  1. Prefer the provider selected in system settings
+  1. Prefer the provider selected in chat settings
   2. Fall back to other configured providers if the preferred one fails
   3. Return a deterministic local answer if all providers are unavailable
 """
@@ -36,7 +36,11 @@ from app.models.evolution import (
     PurposeRecord,
 )
 from app.models.system_settings import SystemSetting
-from app.system_settings import default_model_for_provider, normalize_llm_provider
+from app.system_settings import (
+    normalize_llm_provider,
+    resolve_runtime_model,
+    resolve_runtime_provider,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -52,7 +56,14 @@ _BEDROCK_MODEL_ID = os.environ.get(
     "global.anthropic.claude-sonnet-4-20250514-v1:0",
 )
 _OPENAI_MODEL = os.environ.get("ENGINE_OPENAI_MODEL", "gpt-5.2")
-_LLM_SETTING_KEYS = ("llm_provider", "llm_model", "anthropic_api_key", "openai_api_key")
+_LLM_SETTING_KEYS = (
+    "llm_provider",
+    "llm_model",
+    "chat_llm_provider",
+    "chat_llm_model",
+    "anthropic_api_key",
+    "openai_api_key",
+)
 
 
 def _provider_order(
@@ -222,14 +233,18 @@ ARCHITECTURE
 # ---------------------------------------------------------------------------
 
 async def _get_runtime_settings(db: AsyncSession) -> dict[str, str]:
-    """Fetch LLM runtime settings once so chat uses a coherent provider snapshot."""
+    """Fetch chat runtime settings once so chat uses a coherent provider snapshot."""
     result = await db.execute(
         select(SystemSetting).where(SystemSetting.key.in_(_LLM_SETTING_KEYS))
     )
     values = {setting.key: setting.value for setting in result.scalars().all()}
 
-    provider = normalize_llm_provider(values.get("llm_provider") or os.environ.get("ENGINE_LLM_PROVIDER"))
-    model = (values.get("llm_model") or "").strip() or default_model_for_provider(provider)
+    provider = resolve_runtime_provider(
+        values,
+        "chat",
+        fallback_provider=os.environ.get("ENGINE_LLM_PROVIDER"),
+    )
+    model = resolve_runtime_model(values, "chat", provider)
 
     return {
         "llm_provider": provider,

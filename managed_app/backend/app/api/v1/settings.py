@@ -1,4 +1,4 @@
-"""System settings API — runtime configuration for the engine."""
+"""System settings API — runtime configuration for chat and the engine."""
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +10,8 @@ from app.models.system_settings import SystemSetting
 from app.schemas.system_settings import SettingResponse, SettingUpdate
 from app.system_settings import (
     EDITABLE_SETTING_KEYS,
+    MODEL_SETTING_KEYS,
+    PROVIDER_SETTING_KEYS,
     SECRET_SETTING_KEYS,
     mask_setting_value,
     normalize_llm_provider,
@@ -66,7 +68,7 @@ async def update_setting(
                 raise HTTPException(status_code=422, detail="Interval must be between 5 and 1440 minutes")
         except ValueError:
             raise HTTPException(status_code=422, detail="Interval must be an integer")
-    elif key == "llm_provider":
+    elif key in PROVIDER_SETTING_KEYS:
         provider = normalize_llm_provider(payload.value)
         if provider != payload.value.strip().lower():
             raise HTTPException(
@@ -74,7 +76,7 @@ async def update_setting(
                 detail="Provider must be one of: anthropic, bedrock, openai",
             )
         payload.value = provider
-    elif key == "llm_model":
+    elif key in MODEL_SETTING_KEYS:
         payload.value = payload.value.strip()
         if not payload.value:
             raise HTTPException(status_code=422, detail="Model cannot be blank")

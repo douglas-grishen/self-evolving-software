@@ -195,7 +195,50 @@ def test_build_provider_supports_openai(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_runtime_llm_config_switches_provider_and_model(monkeypatch):
-    """Runtime settings should be able to switch the active provider without restart."""
+    """Engine-scoped runtime settings should switch provider/model without restart."""
+
+    class DummyOpenAIProvider:
+        def __init__(self, config):
+            self.config = config
+
+    monkeypatch.setattr(orchestrator_module, "OpenAIProvider", DummyOpenAIProvider)
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(
+        llm_provider="anthropic",
+        anthropic_api_key="anthropic-key",
+        anthropic_model="claude-sonnet-4-20250514",
+    )
+    orchestrator._provider_managed_externally = False
+    orchestrator.provider = SimpleNamespace(name="old-provider")
+    orchestrator.leader = SimpleNamespace(provider=None)
+    orchestrator.generator = SimpleNamespace(provider=None)
+    orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.event_reporter = _SettingsReporter(
+        {
+            "chat_llm_provider": "anthropic",
+            "chat_llm_model": "claude-sonnet-4-20250514",
+            "engine_llm_provider": "openai",
+            "engine_llm_model": "gpt-5.3-codex",
+            "openai_api_key": "openai-key",
+        }
+    )
+    orchestrator._last_llm_config_signature = orchestrator._current_llm_signature()
+
+    await orchestrator._refresh_runtime_llm_config()
+
+    assert orchestrator.config.llm_provider == "openai"
+    assert orchestrator.config.openai_model == "gpt-5.3-codex"
+    assert orchestrator.config.openai_model_fast == "gpt-5.3-codex"
+    assert isinstance(orchestrator.provider, DummyOpenAIProvider)
+    assert orchestrator.leader.provider is orchestrator.provider
+    assert orchestrator.generator.provider is orchestrator.provider
+    assert orchestrator.purpose_evolver.provider is orchestrator.provider
+
+
+@pytest.mark.asyncio
+async def test_refresh_runtime_llm_config_falls_back_to_legacy_shared_settings(monkeypatch):
+    """Legacy llm_provider/llm_model should remain a valid fallback."""
 
     class DummyOpenAIProvider:
         def __init__(self, config):
@@ -227,11 +270,7 @@ async def test_refresh_runtime_llm_config_switches_provider_and_model(monkeypatc
 
     assert orchestrator.config.llm_provider == "openai"
     assert orchestrator.config.openai_model == "gpt-5.2"
-    assert orchestrator.config.openai_model_fast == "gpt-5.2"
     assert isinstance(orchestrator.provider, DummyOpenAIProvider)
-    assert orchestrator.leader.provider is orchestrator.provider
-    assert orchestrator.generator.provider is orchestrator.provider
-    assert orchestrator.purpose_evolver.provider is orchestrator.provider
 
 
 class _RecordingReporter:

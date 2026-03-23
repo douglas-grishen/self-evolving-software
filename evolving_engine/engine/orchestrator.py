@@ -191,17 +191,22 @@ class Orchestrator:
         self.purpose_evolver.provider = self.provider
 
     async def _refresh_runtime_llm_config(self) -> None:
-        """Hot-reload provider and model choices from persisted system settings."""
+        """Hot-reload engine provider and model choices from persisted system settings."""
         if self._provider_managed_externally:
             return
 
-        provider_value = await self.event_reporter.get_setting("llm_provider")
-        selected_provider = (provider_value or self.config.llm_provider or "anthropic").strip().lower()
+        scoped_provider_value = (await self.event_reporter.get_setting("engine_llm_provider") or "").strip()
+        legacy_provider_value = (await self.event_reporter.get_setting("llm_provider") or "").strip()
+        selected_provider = (
+            scoped_provider_value or legacy_provider_value or self.config.llm_provider or "anthropic"
+        ).strip().lower()
         if selected_provider not in {"anthropic", "bedrock", "openai"}:
             logger.warning("llm_config.invalid_provider", provider=selected_provider)
             selected_provider = self.config.llm_provider
 
-        llm_model = (await self.event_reporter.get_setting("llm_model") or "").strip()
+        scoped_model_value = (await self.event_reporter.get_setting("engine_llm_model") or "").strip()
+        legacy_model_value = (await self.event_reporter.get_setting("llm_model") or "").strip()
+        llm_model = scoped_model_value or legacy_model_value
         anthropic_api_key = await self.event_reporter.get_setting("anthropic_api_key")
         openai_api_key = await self.event_reporter.get_setting("openai_api_key")
 
