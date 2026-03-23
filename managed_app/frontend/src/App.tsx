@@ -8,6 +8,7 @@ import { HealthCheck } from "./components/HealthCheck";
 import { LoginScreen } from "./components/LoginScreen";
 import { SettingsView } from "./components/SettingsView";
 import { ChatView } from "./components/ChatView";
+import { CostView } from "./components/CostView";
 import { TasksView } from "./components/TasksView";
 import { WelcomePurpose } from "./components/WelcomePurpose";
 import { EvolutionTimeline } from "./components/evolution/EvolutionTimeline";
@@ -19,7 +20,7 @@ import { useEvolutionStatus } from "./hooks/useEvolutionApi";
 import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
-type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat" | "database";
+type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat" | "database" | "cost";
 type WindowId = SystemWindowId | `app:${string}`;
 
 function ToolbarStatus() {
@@ -104,6 +105,9 @@ function App() {
           </button>
           <button className="menubar-item" onClick={() => toggle("database")}>
             Database
+          </button>
+          <button className="menubar-item" onClick={() => toggle("cost")}>
+            Cost
           </button>
           <button className="menubar-item" onClick={() => toggle("health")}>
             Health
@@ -205,6 +209,12 @@ function App() {
       {activeWindow === "database" && (
         <AppWindow title="Database Schema" onClose={close} width="800px" height="580px">
           <DatabaseView />
+        </AppWindow>
+      )}
+
+      {activeWindow === "cost" && (
+        <AppWindow title="Cost & Usage" onClose={close} width="720px" height="520px">
+          <CostView />
         </AppWindow>
       )}
 
