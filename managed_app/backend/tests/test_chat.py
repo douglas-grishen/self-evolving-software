@@ -103,3 +103,33 @@ async def test_stream_chat_response_prefers_bedrock_when_configured(monkeypatch)
         'data: {"text": "Bedrock reply"}\n\n',
         "data: [DONE]\n\n",
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_response_uses_local_fallback_when_providers_fail(monkeypatch):
+    """A deterministic local summary should keep chat usable without external LLMs."""
+
+    async def fake_anthropic(*args, **kwargs):
+        raise chat_api.ChatProviderError("Anthropic unavailable.")
+        yield  # pragma: no cover
+
+    async def fake_bedrock(*args, **kwargs):
+        raise chat_api.ChatProviderError("Bedrock unavailable.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(chat_api, "_stream_anthropic", fake_anthropic)
+    monkeypatch.setattr(chat_api, "_stream_bedrock", fake_bedrock)
+
+    chunks = await _collect_chunks(
+        chat_api._stream_chat_response(
+            system="system",
+            messages=[{"role": "user", "content": "What apps currently exist?"}],
+            anthropic_api_key="test-key",
+            local_fallback_text="Live apps:\n- Competitive Intelligence",
+        )
+    )
+
+    assert chunks == [
+        'data: {"text": "Live apps:\\n- Competitive Intelligence"}\n\n',
+        "data: [DONE]\n\n",
+    ]

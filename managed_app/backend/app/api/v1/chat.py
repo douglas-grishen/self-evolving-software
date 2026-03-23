@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+from collections import Counter
 from typing import AsyncIterator
 
 import boto3
@@ -27,7 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.apps import AppRecord
-from app.models.evolution import EvolutionEventRecord, InceptionRecord, PurposeRecord
+from app.models.evolution import (
+    EvolutionBacklogItemRecord,
+    EvolutionEventRecord,
+    InceptionRecord,
+    PurposeRecord,
+)
 from app.models.system_settings import SystemSetting
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -213,6 +220,161 @@ async def _get_api_key(db: AsyncSession) -> str:
     return os.environ.get("ENGINE_ANTHROPIC_API_KEY", "")
 
 
+def _normalize_text(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _clip(text: str, limit: int = 220) -> str:
+    normalized = _normalize_text(text)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _extract_purpose_identity(content_yaml: str) -> tuple[str, str]:
+    """Extract purpose name/description from YAML-ish text without extra deps."""
+    name_match = re.search(r"^\s*name:\s*(.+)$", content_yaml, re.MULTILINE)
+    desc_match = re.search(
+        r"^\s*description:\s*>\s*\n((?:\s{4,}.+\n?)*)",
+        content_yaml,
+        re.MULTILINE,
+    )
+    name = _normalize_text(name_match.group(1)) if name_match else "Unknown purpose"
+    description = ""
+    if desc_match:
+        description = _normalize_text(
+            re.sub(r"^\s{4,}", "", desc_match.group(1), flags=re.MULTILINE)
+        )
+    return name, description
+
+
+async def _build_local_fallback_reply(
+    db: AsyncSession,
+    *,
+    user_message: str,
+    provider_errors: list[str],
+) -> str:
+    """Build a deterministic chat reply from live DB state when LLMs are unavailable."""
+    purpose_result = await db.execute(
+        select(PurposeRecord).order_by(desc(PurposeRecord.created_at)).limit(1)
+    )
+    purpose = purpose_result.scalar_one_or_none()
+
+    apps_result = await db.execute(select(AppRecord).order_by(AppRecord.created_at))
+    apps = apps_result.scalars().all()
+
+    evts_result = await db.execute(
+        select(EvolutionEventRecord)
+        .order_by(desc(EvolutionEventRecord.created_at))
+        .limit(30)
+    )
+    evts = evts_result.scalars().all()
+
+    backlog_result = await db.execute(
+        select(EvolutionBacklogItemRecord)
+        .where(EvolutionBacklogItemRecord.status.in_(["in_progress", "pending", "blocked"]))
+        .order_by(EvolutionBacklogItemRecord.sequence, EvolutionBacklogItemRecord.created_at)
+        .limit(5)
+    )
+    backlog_items = backlog_result.scalars().all()
+
+    question = (user_message or "").lower()
+    app_lines = [
+        f"- {app.icon or '•'} {app.name} [{app.status}] — {len(app.features)} features, {len(app.capabilities)} capabilities. Goal: {_clip(app.goal or app.description or 'No goal recorded.', 140)}"
+        for app in apps
+    ] or ["- No apps have been recorded yet."]
+
+    failed_events = [evt for evt in evts if evt.status == "failed"]
+    failed_lines = [
+        f"- {_clip(evt.plan_summary or evt.user_request or 'Unnamed evolution', 140)}"
+        + (
+            f" Error: {_clip(evt.error, 140)}"
+            if evt.error else ""
+        )
+        for evt in failed_events[:3]
+    ] or ["- No failed evolutions in the latest 30 cycles."]
+
+    plan_change_lines: list[str] = []
+    for evt in evts:
+        changes = (evt.events_json or {}).get("plan_changes", []) if evt.events_json else []
+        for change in changes[:5]:
+            action = change.get("action", "changed")
+            path = change.get("file_path", "unknown file")
+            plan_change_lines.append(f"- {action} {path}")
+        if plan_change_lines:
+            break
+    if not plan_change_lines:
+        plan_change_lines = ["- No file-level change list is available in recent evolution events."]
+
+    backlog_lines = [
+        f"- [{item.status}] {item.title}"
+        + (f" — {_clip(item.description, 120)}" if item.description else "")
+        for item in backlog_items
+    ] or ["- No active backlog items are recorded."]
+
+    purpose_name, purpose_desc = _extract_purpose_identity(
+        purpose.content_yaml if purpose else ""
+    )
+    purpose_lines = [
+        f"- Current purpose: {purpose_name}",
+        f"- Summary: {_clip(purpose_desc or 'No purpose description recorded.', 220)}",
+    ]
+
+    recent_counts = Counter(evt.status for evt in evts)
+    status_line = (
+        f"- Latest 30 evolution events: "
+        f"{recent_counts.get('completed', 0)} completed, "
+        f"{recent_counts.get('failed', 0)} failed, "
+        f"{sum(1 for evt in evts if evt.status not in {'completed', 'failed'})} non-terminal."
+    )
+    architecture_lines = [
+        "- Frontend: React desktop shell with app windows.",
+        "- Backend: FastAPI + PostgreSQL for apps, purpose, evolutions, and settings.",
+        "- Engine: MAPE-K loop that plans and applies code changes to /opt/evolved-app.",
+    ]
+
+    intro = "The external LLM providers are unavailable right now, so this answer comes from the live system database."
+    if provider_errors:
+        intro += " " + " ".join(provider_errors)
+
+    sections = [intro]
+
+    if "purpose" in question:
+        sections.extend(["", "Purpose", *purpose_lines])
+    elif "app" in question and any(
+        token in question for token in ["exist", "current", "have", "list", "what"]
+    ):
+        sections.extend(["", "Apps", *app_lines])
+    elif any(token in question for token in ["fail", "failed", "failing", "error"]):
+        sections.extend(["", "Failures", status_line, *failed_lines])
+    elif any(token in question for token in ["trying to build", "build", "next", "roadmap", "plan"]):
+        sections.extend(["", "Backlog", *backlog_lines])
+    elif any(token in question for token in ["file", "modified", "created", "changed"]):
+        sections.extend(["", "Recent file changes", *plan_change_lines])
+    elif "mape-k" in question or "architecture" in question or "how" in question:
+        sections.extend(["", "Architecture", *architecture_lines])
+    else:
+        sections.extend(
+            [
+                "",
+                "Purpose",
+                *purpose_lines,
+                "",
+                "Apps",
+                *app_lines[:5],
+                "",
+                "Backlog",
+                *backlog_lines[:5],
+                "",
+                "Evolution status",
+                status_line,
+                *failed_lines[:3],
+            ]
+        )
+
+    return "\n".join(sections)
+
+
 # ---------------------------------------------------------------------------
 # Provider helpers
 # ---------------------------------------------------------------------------
@@ -315,6 +477,7 @@ async def _stream_chat_response(
     system: str,
     messages: list[dict],
     anthropic_api_key: str,
+    local_fallback_text: str | None = None,
 ) -> AsyncIterator[str]:
     """Try configured providers in order and surface real upstream failures."""
     provider_errors: list[str] = []
@@ -330,6 +493,11 @@ async def _stream_chat_response(
             return
         except ChatProviderError as exc:
             provider_errors.append(f"{provider.title()}: {exc}")
+
+    if local_fallback_text:
+        yield _sse_text(local_fallback_text)
+        yield _sse_done()
+        return
 
     combined = " ".join(provider_errors) or "No chat provider is configured."
     yield _sse_text(f"⚠️ Chat is unavailable right now. {combined}")
@@ -349,12 +517,18 @@ async def chat(
     system = await _build_system_prompt(db)
     api_key = await _get_api_key(db)
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
+    local_fallback_text = await _build_local_fallback_reply(
+        db,
+        user_message=messages[-1]["content"] if messages else "",
+        provider_errors=[],
+    )
 
     return StreamingResponse(
         _stream_chat_response(
             system=system,
             messages=messages,
             anthropic_api_key=api_key,
+            local_fallback_text=local_fallback_text,
         ),
         media_type="text/event-stream",
         headers={
