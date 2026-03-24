@@ -93,6 +93,8 @@ services:
       ENGINE_MANAGED_APP_PATH: /workspace/managed_app
       ENGINE_SELF_PATH: /workspace/evolving_engine
       ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
+      ENGINE_SANDBOX_TMP_DIR: /sandbox-tmp
+      ENGINE_USAGE_STATE_PATH: /tmp/evolving_engine_usage.json
       ENGINE_REPO_ROOT: /workspace
       # --- Runtime monitoring ---
       ENGINE_MONITOR_URL: http://backend:8000
@@ -110,6 +112,8 @@ services:
     volumes:
       - .:/workspace:ro
       - ./evolving_engine:/app
+    tmpfs:
+      - /sandbox-tmp:size=1024m,mode=1777
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - autonomic-manager

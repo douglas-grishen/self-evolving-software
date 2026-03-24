@@ -17,6 +17,13 @@ CHAT_LLM_PROVIDER_KEY = "chat_llm_provider"
 CHAT_LLM_MODEL_KEY = "chat_llm_model"
 ENGINE_LLM_PROVIDER_KEY = "engine_llm_provider"
 ENGINE_LLM_MODEL_KEY = "engine_llm_model"
+ENGINE_DAILY_LLM_CALLS_LIMIT_KEY = "engine_daily_llm_calls_limit"
+ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY = "engine_daily_input_tokens_limit"
+ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY = "engine_daily_output_tokens_limit"
+ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY = "engine_daily_proactive_runs_limit"
+ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT_KEY = "engine_daily_failed_evolutions_limit"
+ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY = "engine_daily_task_attempt_limit"
+ENGINE_DAILY_USAGE_SNAPSHOT_KEY = "engine_daily_usage_snapshot"
 PROVIDER_SETTING_KEYS = {
     LEGACY_LLM_PROVIDER_KEY,
     CHAT_LLM_PROVIDER_KEY,
@@ -27,12 +34,22 @@ MODEL_SETTING_KEYS = {
     CHAT_LLM_MODEL_KEY,
     ENGINE_LLM_MODEL_KEY,
 }
+ENGINE_BUDGET_SETTING_KEYS = {
+    ENGINE_DAILY_LLM_CALLS_LIMIT_KEY,
+    ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY,
+    ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY,
+    ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY,
+    ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT_KEY,
+    ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY,
+}
 EDITABLE_SETTING_KEYS = {
     "proactive_interval_minutes",
     *PROVIDER_SETTING_KEYS,
     *MODEL_SETTING_KEYS,
+    *ENGINE_BUDGET_SETTING_KEYS,
     "anthropic_api_key",
     "openai_api_key",
+    ENGINE_DAILY_USAGE_SNAPSHOT_KEY,
 }
 
 
@@ -55,6 +72,16 @@ def default_model_for_provider(provider: str) -> str:
     if normalized == "openai":
         return os.environ.get("ENGINE_OPENAI_MODEL", "gpt-5.2")
     return os.environ.get("ENGINE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+
+
+def default_budget_value(env_key: str, fallback: int, *, minimum: int = 1) -> str:
+    """Return a normalized positive integer budget as a persisted string."""
+    raw = os.environ.get(env_key, str(fallback))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = fallback
+    return str(max(minimum, value))
 
 
 def resolve_runtime_provider(
@@ -127,6 +154,34 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
         "openai_api_key": (
             "",
             "Override for the OpenAI API key. Leave blank to use ENGINE_OPENAI_API_KEY.",
+        ),
+        ENGINE_DAILY_LLM_CALLS_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_LLM_CALLS_LIMIT", 60),
+            "UTC daily limit for self-evolution LLM calls before proactive work enters safe mode.",
+        ),
+        ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_INPUT_TOKENS_LIMIT", 500000),
+            "UTC daily limit for self-evolution input tokens before proactive work enters safe mode.",
+        ),
+        ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_OUTPUT_TOKENS_LIMIT", 120000),
+            "UTC daily limit for self-evolution output tokens before proactive work enters safe mode.",
+        ),
+        ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_PROACTIVE_RUNS_LIMIT", 24),
+            "UTC daily limit for proactive engine runs before it stops autonomous product work.",
+        ),
+        ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT", 10),
+            "UTC daily limit for failed proactive evolutions before the engine enters safe mode.",
+        ),
+        ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY: (
+            default_budget_value("ENGINE_DAILY_TASK_ATTEMPT_LIMIT", 3),
+            "UTC daily cap for how many times the engine may start the same backlog task before moving on.",
+        ),
+        ENGINE_DAILY_USAGE_SNAPSHOT_KEY: (
+            "{}",
+            "Engine-maintained UTC daily usage snapshot for LLM calls, tokens, and proactive runs.",
         ),
     }
 

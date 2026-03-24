@@ -317,13 +317,17 @@ async def sync_backlog(
             item_data["app_spec"] = app_spec
 
         if record:
+            preserve_blocked_state = record.status == "blocked" and item.status.value == "pending"
             for field, value in item_data.items():
                 if field == "status" and record.status in {"done", "abandoned"}:
                     continue
                 if field == "status" and record.status == "in_progress" and value == "pending":
                     continue
+                if field == "status" and preserve_blocked_state:
+                    continue
                 setattr(record, field, value)
-            record.blocked_reason = item.blocked_reason
+            if not preserve_blocked_state or item.blocked_reason:
+                record.blocked_reason = item.blocked_reason
             if record.status in {"done", "abandoned"} and not record.completed_at:
                 record.completed_at = datetime.now(timezone.utc)
             continue

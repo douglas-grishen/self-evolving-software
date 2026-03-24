@@ -12,6 +12,7 @@ import structlog
 
 from engine.config import EngineSettings, settings
 from engine.providers.base import BaseLLMProvider
+from engine.usage_tracker import UsageTracker
 
 logger = structlog.get_logger()
 
@@ -24,6 +25,7 @@ class AnthropicProvider(BaseLLMProvider):
         self.client = anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key)
         self.model = cfg.anthropic_model
         self.model_fast = cfg.anthropic_model_fast
+        self.usage_tracker = UsageTracker(cfg.usage_state_path)
 
     async def generate(
         self,
@@ -94,6 +96,12 @@ class AnthropicProvider(BaseLLMProvider):
             output_tokens=message.usage.output_tokens,
             stop_reason=message.stop_reason,
         )
+        self.usage_tracker.record_llm_call(
+            provider="anthropic",
+            model=model,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
 
         return text
 
@@ -129,6 +137,12 @@ class AnthropicProvider(BaseLLMProvider):
             output_tokens=output_tokens,
             stop_reason=stop_reason,
             streamed=True,
+        )
+        self.usage_tracker.record_llm_call(
+            provider="anthropic",
+            model=kwargs.get("model", "?"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
         return text

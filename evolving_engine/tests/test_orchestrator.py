@@ -127,6 +127,32 @@ def test_select_next_backlog_item_skips_retry_cooldown_and_keeps_moving():
     assert selected.task_key == "company_export"
 
 
+def test_select_next_backlog_item_skips_task_that_hit_daily_attempt_cap():
+    """A task that already burned today's attempt budget should not monopolize the backlog."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.daily_task_attempt_limit = 3
+    orchestrator.usage_tracker = _UsageTrackerStub({"repair_search": 3})
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="repair_search",
+            sequence=1,
+            priority=BacklogTaskPriority.HIGH,
+        ),
+        _backlog_item(
+            item_id="2",
+            task_key="company_export",
+            sequence=2,
+            priority=BacklogTaskPriority.NORMAL,
+        ),
+    ]
+
+    selected = orchestrator._select_next_backlog_item(items)
+
+    assert selected is not None
+    assert selected.task_key == "company_export"
+
+
 def test_inspect_backlog_items_marks_blocked_frontier_when_dependencies_are_blocked():
     """A blocked task should surface as backlog stall pressure for replanning."""
     orchestrator = Orchestrator.__new__(Orchestrator)
@@ -182,6 +208,31 @@ def test_backlog_replan_reason_reports_blocked_frontier():
     ]
 
     assert orchestrator._backlog_replan_reason(items) == "blocked_frontier:timeline_build:blocked"
+
+
+def test_proactive_budget_status_blocks_when_daily_llm_calls_are_exhausted():
+    """Daily budgets should put proactive work into safe mode before another loop burns cost."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.daily_llm_calls_limit = 5
+    orchestrator.daily_input_tokens_limit = 500_000
+    orchestrator.daily_output_tokens_limit = 120_000
+    orchestrator.daily_proactive_runs_limit = 24
+    orchestrator.daily_failed_evolutions_limit = 10
+    orchestrator.usage_tracker = _UsageTrackerSnapshotStub(
+        {
+            "llm_calls": 5,
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "proactive_runs": 2,
+            "failed_evolutions": 0,
+        }
+    )
+
+    allowed, reason, snapshot = orchestrator._proactive_budget_status()
+
+    assert allowed is False
+    assert reason == "daily_llm_calls_limit"
+    assert snapshot["llm_calls"] == 5
 
 
 @pytest.mark.asyncio
@@ -525,6 +576,23 @@ class _SettingsReporter:
 
     async def get_setting(self, key: str):
         return self.values.get(key)
+
+
+class _UsageTrackerStub:
+    def __init__(self, attempts: dict[str, int]) -> None:
+        self.attempts = attempts
+
+    def task_attempts_today(self, task_key: str) -> int:
+        return self.attempts.get(task_key, 0)
+
+
+class _UsageTrackerSnapshotStub(_UsageTrackerStub):
+    def __init__(self, snapshot: dict[str, int]) -> None:
+        super().__init__({})
+        self._snapshot = snapshot
+
+    def snapshot(self) -> dict[str, int]:
+        return dict(self._snapshot)
 
 
 class _BacklogReporter:

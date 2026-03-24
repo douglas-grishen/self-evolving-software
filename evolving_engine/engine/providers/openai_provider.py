@@ -8,6 +8,7 @@ import structlog
 
 from engine.config import EngineSettings, settings
 from engine.providers.base import BaseLLMProvider
+from engine.usage_tracker import UsageTracker
 
 logger = structlog.get_logger()
 
@@ -25,6 +26,7 @@ class OpenAIProvider(BaseLLMProvider):
         self.client: Any = AsyncOpenAI(api_key=cfg.openai_api_key)
         self.model = cfg.openai_model
         self.model_fast = cfg.openai_model_fast or cfg.openai_model
+        self.usage_tracker = UsageTracker(cfg.usage_state_path)
 
     async def generate(
         self,
@@ -64,6 +66,12 @@ class OpenAIProvider(BaseLLMProvider):
             "openai.response",
             model=model,
             request_id=getattr(response, "_request_id", None),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+        )
+        self.usage_tracker.record_llm_call(
+            provider="openai",
+            model=model,
             input_tokens=getattr(usage, "input_tokens", None),
             output_tokens=getattr(usage, "output_tokens", None),
         )

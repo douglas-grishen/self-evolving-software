@@ -10,6 +10,7 @@ from app.models.system_settings import SystemSetting
 from app.schemas.system_settings import SettingResponse, SettingUpdate
 from app.system_settings import (
     EDITABLE_SETTING_KEYS,
+    ENGINE_BUDGET_SETTING_KEYS,
     MODEL_SETTING_KEYS,
     PROVIDER_SETTING_KEYS,
     SECRET_SETTING_KEYS,
@@ -68,6 +69,14 @@ async def update_setting(
                 raise HTTPException(status_code=422, detail="Interval must be between 5 and 1440 minutes")
         except ValueError:
             raise HTTPException(status_code=422, detail="Interval must be an integer")
+    elif key in ENGINE_BUDGET_SETTING_KEYS:
+        try:
+            v = int(payload.value)
+            if v < 1:
+                raise HTTPException(status_code=422, detail="Budget limit must be at least 1")
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Budget limit must be an integer")
+        payload.value = str(v)
     elif key in PROVIDER_SETTING_KEYS:
         provider = normalize_llm_provider(payload.value)
         if provider != payload.value.strip().lower():

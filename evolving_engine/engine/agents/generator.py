@@ -110,6 +110,9 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - The repository map is the source of truth for existing frontend app module roots. Reuse the
   exact path it reports for an app and never create a sibling module that differs only by case,
   camelCase, spacing, or hyphenation.
+- The repository map is also the source of truth for notable static assets in `frontend/public/`.
+  Reuse those exact asset paths; do not invent duplicate copies under app-module directories
+  unless the plan explicitly migrates every consumer to the new location.
 - Match the desktop app's frontend module key to a slug of the app name (for example
   `Competitive Intelligence` -> `competitive-intelligence`) so the shell can launch it reliably.
 - If the repository map reports a path conflict for a frontend app root, the safe move is to

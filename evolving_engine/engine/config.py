@@ -33,6 +33,13 @@ class EngineSettings(BaseSettings):
     # Scratch space for staging generated files before validation
     workspace_path: Path = Path("/tmp/evolving_engine_workspace")
 
+    # Temp root for sandbox copies/build contexts. In production this should
+    # point at a tmpfs or other filesystem that is not the container overlay.
+    sandbox_tmp_dir: Path = Path("/tmp")
+
+    # Engine-maintained UTC daily usage ledger for proactive cost guardrails.
+    usage_state_path: Path = Path("/tmp/evolving_engine_usage.json")
+
     # ---------------------------------------------------------------------------
     # Runtime monitoring (Monitor phase — "M" in MAPE-K)
     # ---------------------------------------------------------------------------
@@ -77,6 +84,17 @@ class EngineSettings(BaseSettings):
 
     sandbox_type: str = "docker"              # "docker" | "codebuild"
     sandbox_timeout_seconds: int = 300
+
+    # ---------------------------------------------------------------------------
+    # Autonomy guardrails (UTC daily budgets)
+    # ---------------------------------------------------------------------------
+
+    daily_llm_calls_limit: int = 60
+    daily_input_tokens_limit: int = 500_000
+    daily_output_tokens_limit: int = 120_000
+    daily_proactive_runs_limit: int = 24
+    daily_failed_evolutions_limit: int = 10
+    daily_task_attempt_limit: int = 3
 
     # ---------------------------------------------------------------------------
     # Deployment (local — never pushes to GitHub)

@@ -26,6 +26,7 @@ SELF-MODIFICATION:
 
 import asyncio
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ from engine.providers.openai_provider import OpenAIProvider
 from engine.repo.scanner import build_repo_map, canonicalize_frontend_app_key
 from engine.sandbox.base import BaseSandbox
 from engine.sandbox.docker_sandbox import DockerSandbox
+from engine.usage_tracker import UsageTracker
 
 logger = structlog.get_logger()
 
@@ -93,6 +95,7 @@ _TRANSIENT_BACKLOG_ERROR_PATTERNS = (
     re.compile(r"connection (?:refused|reset|error|closed)", re.IGNORECASE),
     re.compile(r"(?:502|503|504)\b"),
     re.compile(r"rate limit|throttl", re.IGNORECASE),
+    re.compile(r"no space left on device|disk full|enospc", re.IGNORECASE),
     re.compile(r"backend .* unavailable", re.IGNORECASE),
     re.compile(r"control[_ -]?plane .* unavailable", re.IGNORECASE),
     re.compile(r"network", re.IGNORECASE),
@@ -197,6 +200,13 @@ class Orchestrator:
         # Proactive planning cache — skip re-planning if the inputs are unchanged
         self._last_backlog_hash: str = ""
         self._last_llm_config_signature = self._current_llm_signature()
+        self.usage_tracker = UsageTracker(self.config.usage_state_path)
+        self.daily_llm_calls_limit = self.config.daily_llm_calls_limit
+        self.daily_input_tokens_limit = self.config.daily_input_tokens_limit
+        self.daily_output_tokens_limit = self.config.daily_output_tokens_limit
+        self.daily_proactive_runs_limit = self.config.daily_proactive_runs_limit
+        self.daily_failed_evolutions_limit = self.config.daily_failed_evolutions_limit
+        self.daily_task_attempt_limit = self.config.daily_task_attempt_limit
 
     def _build_provider(self) -> BaseLLMProvider:
         """Instantiate the configured LLM provider."""
@@ -315,6 +325,106 @@ class Orchestrator:
             anthropic_key_configured=bool(self.config.anthropic_api_key),
             openai_key_configured=bool(self.config.openai_api_key),
         )
+
+    async def _refresh_runtime_guardrails(self) -> None:
+        """Hot-reload daily autonomy/cost limits from persisted settings."""
+        self.daily_llm_calls_limit = await self._read_int_setting(
+            "engine_daily_llm_calls_limit",
+            self.config.daily_llm_calls_limit,
+            minimum=1,
+        )
+        self.daily_input_tokens_limit = await self._read_int_setting(
+            "engine_daily_input_tokens_limit",
+            self.config.daily_input_tokens_limit,
+            minimum=1,
+        )
+        self.daily_output_tokens_limit = await self._read_int_setting(
+            "engine_daily_output_tokens_limit",
+            self.config.daily_output_tokens_limit,
+            minimum=1,
+        )
+        self.daily_proactive_runs_limit = await self._read_int_setting(
+            "engine_daily_proactive_runs_limit",
+            self.config.daily_proactive_runs_limit,
+            minimum=1,
+        )
+        self.daily_failed_evolutions_limit = await self._read_int_setting(
+            "engine_daily_failed_evolutions_limit",
+            self.config.daily_failed_evolutions_limit,
+            minimum=1,
+        )
+        self.daily_task_attempt_limit = await self._read_int_setting(
+            "engine_daily_task_attempt_limit",
+            self.config.daily_task_attempt_limit,
+            minimum=1,
+        )
+
+    async def _read_int_setting(self, key: str, default: int, *, minimum: int = 0) -> int:
+        """Read a positive integer setting with a safe fallback."""
+        raw = await self.event_reporter.get_setting(key)
+        if raw is None:
+            return default
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning("settings.invalid_integer", key=key, value=raw, fallback=default)
+            return default
+        return max(minimum, value)
+
+    async def _publish_usage_snapshot(self) -> None:
+        """Expose the engine's UTC daily usage ledger through backend settings."""
+        if not hasattr(self.event_reporter, "set_setting"):
+            return
+        try:
+            snapshot = self.usage_tracker.snapshot()
+            await self.event_reporter.set_setting(
+                "engine_daily_usage_snapshot",
+                json.dumps(snapshot, sort_keys=True),
+            )
+        except Exception as exc:
+            logger.debug("usage_snapshot.publish_failed", error=str(exc))
+
+    def _task_attempts_today(self, task_key: str) -> int:
+        """Return today's starts for this task, tolerating absent tracker state in tests."""
+        tracker = getattr(self, "usage_tracker", None)
+        if tracker is None:
+            return 0
+        try:
+            return tracker.task_attempts_today(task_key)
+        except Exception:
+            return 0
+
+    def _daily_task_attempt_limit(self) -> int:
+        """Return the configured per-task daily cap with a safe test-friendly fallback."""
+        if hasattr(self, "daily_task_attempt_limit"):
+            return int(getattr(self, "daily_task_attempt_limit"))
+        config = getattr(self, "config", None)
+        if config is not None and hasattr(config, "daily_task_attempt_limit"):
+            return int(config.daily_task_attempt_limit)
+        return 3
+
+    def _proactive_budget_status(self) -> tuple[bool, str | None, dict]:
+        """Decide whether proactive work is allowed under today's budgets."""
+        tracker = getattr(self, "usage_tracker", None)
+        if tracker is None:
+            return True, None, {}
+
+        snapshot = tracker.snapshot()
+        checks = (
+            ("llm_calls", self.daily_llm_calls_limit, "daily_llm_calls_limit"),
+            ("input_tokens", self.daily_input_tokens_limit, "daily_input_tokens_limit"),
+            ("output_tokens", self.daily_output_tokens_limit, "daily_output_tokens_limit"),
+            ("proactive_runs", self.daily_proactive_runs_limit, "daily_proactive_runs_limit"),
+            (
+                "failed_evolutions",
+                self.daily_failed_evolutions_limit,
+                "daily_failed_evolutions_limit",
+            ),
+        )
+        for key, limit, reason in checks:
+            if limit > 0 and int(snapshot.get(key, 0)) >= limit:
+                return False, reason, snapshot
+        return True, None, snapshot
 
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
@@ -442,6 +552,8 @@ class Orchestrator:
                         )
 
                 await self._refresh_runtime_llm_config()
+                await self._refresh_runtime_guardrails()
+                await self._publish_usage_snapshot()
 
                 # Process pending Inceptions before monitoring
                 await self._process_pending_inceptions()
@@ -697,6 +809,20 @@ class Orchestrator:
     async def _proactive_evolution(self) -> bool:
         """Plan or refresh the proactive backlog, then execute one task from it."""
         async with self._evolution_semaphore:
+            budget_ok, budget_reason, snapshot = self._proactive_budget_status()
+            if not budget_ok:
+                logger.warning(
+                    "proactive.safe_mode_budget_exhausted",
+                    reason=budget_reason,
+                    llm_calls=snapshot.get("llm_calls", 0),
+                    input_tokens=snapshot.get("input_tokens", 0),
+                    output_tokens=snapshot.get("output_tokens", 0),
+                    proactive_runs=snapshot.get("proactive_runs", 0),
+                    failed_evolutions=snapshot.get("failed_evolutions", 0),
+                )
+                await self._publish_usage_snapshot()
+                return True
+
             self._last_proactive_run = time.time()
             logger.info("proactive.analyzing_purpose", purpose_version=self.purpose.version)
 
@@ -808,6 +934,11 @@ class Orchestrator:
                 status=next_item.status.value,
             )
             success = await self._execute_backlog_item(next_item)
+            self.usage_tracker.record_proactive_run(
+                success=success,
+                task_key=next_item.task_key,
+            )
+            await self._publish_usage_snapshot()
             if success:
                 self._last_backlog_hash = ""
             return success
@@ -875,6 +1006,8 @@ set of tasks that can be executed across multiple autonomous runs.
 - When a task is blocked, set blocked_reason and shrink later tasks accordingly
 - Prefer at least one independent follow-up task when possible, so the backlog can keep moving
   if another task enters retry cooldown or becomes blocked
+- If a task is already blocked in the persisted backlog, do not reopen it as pending with the
+  same task_key unless its scope materially changes or the blocking dependency is gone
 - Include acceptance criteria that can be validated after the cycle
 - Use depends_on with task_key references when a task must wait on another one
 
@@ -959,6 +1092,11 @@ set of tasks that can be executed across multiple autonomous runs.
 
             state.non_terminal_count += 1
             dependencies_satisfied = all(dep in completed_keys for dep in item.depends_on)
+            daily_task_attempt_limit = self._daily_task_attempt_limit()
+            task_attempt_cap_reached = (
+                daily_task_attempt_limit > 0
+                and self._task_attempts_today(item.task_key) >= daily_task_attempt_limit
+            )
 
             if state.blocked_frontier_item is None:
                 if item.status == BacklogTaskStatus.BLOCKED:
@@ -971,6 +1109,8 @@ set of tasks that can be executed across multiple autonomous runs.
             if item.status not in {BacklogTaskStatus.IN_PROGRESS, BacklogTaskStatus.PENDING}:
                 continue
             if not dependencies_satisfied:
+                continue
+            if task_attempt_cap_reached:
                 continue
             if item.retry_after and item.retry_after > now:
                 continue
@@ -1022,6 +1162,8 @@ set of tasks that can be executed across multiple autonomous runs.
 
     async def _execute_backlog_item(self, item: BacklogItem) -> bool:
         """Execute one persisted backlog item and update its state."""
+        self.usage_tracker.record_task_attempt(item.task_key)
+        await self._publish_usage_snapshot()
         request_text = self._build_backlog_request(item)
         ctx = create_context(
             request_text,

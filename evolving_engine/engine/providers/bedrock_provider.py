@@ -7,6 +7,7 @@ import structlog
 
 from engine.config import EngineSettings, settings
 from engine.providers.base import BaseLLMProvider
+from engine.usage_tracker import UsageTracker
 
 logger = structlog.get_logger()
 
@@ -18,6 +19,7 @@ class BedrockProvider(BaseLLMProvider):
         cfg = config or settings
         self.client = boto3.client("bedrock-runtime", region_name=cfg.bedrock_region)
         self.model_id = cfg.bedrock_model_id
+        self.usage_tracker = UsageTracker(cfg.usage_state_path)
 
     async def generate(
         self,
@@ -63,6 +65,12 @@ class BedrockProvider(BaseLLMProvider):
         usage = response.get("usage", {})
         logger.debug(
             "bedrock.response",
+            input_tokens=usage.get("inputTokens", 0),
+            output_tokens=usage.get("outputTokens", 0),
+        )
+        self.usage_tracker.record_llm_call(
+            provider="bedrock",
+            model=self.model_id,
             input_tokens=usage.get("inputTokens", 0),
             output_tokens=usage.get("outputTokens", 0),
         )

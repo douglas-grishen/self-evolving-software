@@ -11,6 +11,7 @@ type ProviderKey = "anthropic" | "bedrock" | "openai";
 type RuntimeScope = "chat" | "engine";
 
 const SECRET_KEYS = new Set(["anthropic_api_key", "openai_api_key"]);
+const ENGINE_USAGE_SNAPSHOT_KEY = "engine_daily_usage_snapshot";
 const RUNTIME_KEYS: Record<RuntimeScope, { provider: string; model: string }> = {
   chat: {
     provider: "chat_llm_provider",
@@ -21,6 +22,44 @@ const RUNTIME_KEYS: Record<RuntimeScope, { provider: string; model: string }> = 
     model: "engine_llm_model",
   },
 };
+const BUDGET_FIELDS = [
+  {
+    key: "engine_daily_llm_calls_limit",
+    label: "LLM calls/day",
+    description: "Hard cap on engine provider calls before proactive work stops.",
+    fallback: "60",
+  },
+  {
+    key: "engine_daily_input_tokens_limit",
+    label: "Input tokens/day",
+    description: "UTC daily cap on prompt/input tokens consumed by self-evolution.",
+    fallback: "500000",
+  },
+  {
+    key: "engine_daily_output_tokens_limit",
+    label: "Output tokens/day",
+    description: "UTC daily cap on generated/output tokens consumed by self-evolution.",
+    fallback: "120000",
+  },
+  {
+    key: "engine_daily_proactive_runs_limit",
+    label: "Proactive runs/day",
+    description: "Maximum autonomous product-evolution cycles per UTC day.",
+    fallback: "24",
+  },
+  {
+    key: "engine_daily_failed_evolutions_limit",
+    label: "Failed runs/day",
+    description: "If the engine fails this many proactive runs in a UTC day, it enters safe mode.",
+    fallback: "10",
+  },
+  {
+    key: "engine_daily_task_attempt_limit",
+    label: "Same task/day",
+    description: "Maximum times the same backlog task may be started in one UTC day.",
+    fallback: "3",
+  },
+] as const;
 
 function defaultModelForProvider(provider: ProviderKey): string {
   switch (provider) {
@@ -196,8 +235,9 @@ export function SettingsView() {
   };
 
   const lastUpdated = (() => {
-    if (settings.length === 0) return null;
-    return settings.reduce((latest, setting) => (
+    const visibleSettings = settings.filter((setting) => setting.key !== ENGINE_USAGE_SNAPSHOT_KEY);
+    if (visibleSettings.length === 0) return null;
+    return visibleSettings.reduce((latest, setting) => (
       new Date(setting.updated_at).getTime() > new Date(latest.updated_at).getTime() ? setting : latest
     )).updated_at;
   })();
@@ -211,6 +251,13 @@ export function SettingsView() {
   const intervalMinutes = parseInt(values.proactive_interval_minutes || "60", 10);
   const anthropicMasked = settings.find((setting) => setting.key === "anthropic_api_key")?.value || "";
   const openaiMasked = settings.find((setting) => setting.key === "openai_api_key")?.value || "";
+
+  const saveBudgetSettings = async () => {
+    for (const field of BUDGET_FIELDS) {
+      const nextValue = String(Math.max(1, parseInt(values[field.key] || field.fallback, 10) || parseInt(field.fallback, 10)));
+      await persistSetting(field.key, nextValue);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -257,6 +304,58 @@ export function SettingsView() {
         </div>
         {errors.proactive_interval_minutes && (
           <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.proactive_interval_minutes}</div>
+        )}
+      </div>
+
+      <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Daily Engine Budgets</div>
+          <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+            UTC daily guardrails that stop proactive self-evolution before it loops through too many LLM calls or retries.
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          {BUDGET_FIELDS.map((field) => (
+            <label
+              key={field.key}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                padding: "10px 12px",
+                borderRadius: 8,
+                background: "rgba(0,0,0,0.18)",
+                border: "1px solid rgba(255,255,255,0.06)",
+              }}
+            >
+              <span style={{ fontSize: "0.76rem", color: "#d4d4d8" }}>{field.label}</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={values[field.key] || field.fallback}
+                onChange={(e) => setValues((current) => ({ ...current, [field.key]: e.target.value }))}
+                style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              />
+              <span style={{ fontSize: "0.72rem", color: "#666", lineHeight: 1.45 }}>{field.description}</span>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: "0.72rem", color: "#666" }}>
+            Budgets reset at 00:00 UTC. Reactive monitoring still runs; these caps only constrain autonomous product-evolution work.
+          </div>
+          <button
+            className="refresh-btn"
+            style={{ padding: "6px 14px", minWidth: 110, ...statusStyles(Boolean(saved.engine_budgets)) }}
+            onClick={() => runSave("engine_budgets", () => saveBudgetSettings())}
+            disabled={saving.engine_budgets}
+          >
+            {saved.engine_budgets ? "✓ Saved" : saving.engine_budgets ? "…" : "Save Budgets"}
+          </button>
+        </div>
+        {errors.engine_budgets && (
+          <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.engine_budgets}</div>
         )}
       </div>
 

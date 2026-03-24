@@ -97,6 +97,22 @@ _CONDITIONAL_PLATFORM_CONTRACTS = (
     },
 )
 
+_SANDBOX_COPY_IGNORE = shutil.ignore_patterns(
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".next",
+    "dist",
+    "build",
+    "*.pyc",
+    "*.pyo",
+)
+
 
 def _request_allows_desktop_shell_changes(request_text: str) -> bool:
     text = request_text.lower()
@@ -300,19 +316,62 @@ class DockerSandbox(BaseSandbox):
             return evolved_app_path
         return Path(self.config.managed_app_path).resolve()
 
+    def _sandbox_tmp_root(self) -> Path:
+        """Use a configurable temp root so production can mount a real tmpfs."""
+        preferred = Path(self.config.sandbox_tmp_dir).resolve()
+        preferred.mkdir(parents=True, exist_ok=True)
+        return preferred
+
+    def _copy_validation_source(self, source: Path, destination: Path) -> None:
+        """Copy only the validation-relevant source tree into the sandbox."""
+        shutil.copytree(
+            source,
+            destination,
+            ignore=_SANDBOX_COPY_IGNORE,
+        )
+
+    def _impacted_services(self, context: EvolutionContext) -> set[str]:
+        """Build/test only services touched by this slice when possible."""
+        paths = {
+            change.file_path.lstrip("/")
+            for change in (context.plan.changes if context.plan else [])
+        }
+        paths.update(gen_file.file_path.lstrip("/") for gen_file in context.generated_files)
+
+        impacted: set[str] = set()
+        for path in paths:
+            if (
+                path.startswith("backend/")
+                or path.startswith("app/")
+                or path.startswith("migrations/")
+            ):
+                impacted.add("backend")
+            elif path.startswith("frontend/"):
+                impacted.add("frontend")
+            elif path == "docker-compose.yml" or path.endswith("/Dockerfile"):
+                impacted.update({"backend", "frontend"})
+
+        return impacted or {"backend", "frontend"}
+
     async def run_tests(self, context: EvolutionContext) -> ValidationResult:
         """Execute the three-stage validation pipeline."""
         errors: list[str] = []
         suggestions: list[str] = []
+        impacted_services = self._impacted_services(context)
 
         # Stage 0: Prepare sandbox workspace
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="evo_sandbox_"))
+        self.temp_dir = Path(
+            tempfile.mkdtemp(
+                prefix="evo_sandbox_",
+                dir=str(self._sandbox_tmp_root()),
+            )
+        )
         sandbox_app = self.temp_dir / "managed_app"
 
         # Copy the current managed app into the sandbox
         managed_app_src = self._resolve_validation_source_path()
         if managed_app_src.exists():
-            shutil.copytree(managed_app_src, sandbox_app)
+            self._copy_validation_source(managed_app_src, sandbox_app)
         else:
             return ValidationResult(
                 passed=False,
@@ -364,14 +423,17 @@ class DockerSandbox(BaseSandbox):
             suggestions.append("Fix linting errors before proceeding")
 
         # Stage 2: Build test
-        build_ok, build_errors = await self._run_build_test(sandbox_app)
+        build_ok, build_errors = await self._run_build_test(
+            sandbox_app,
+            impacted_services=impacted_services,
+        )
         if not build_ok:
             errors.extend(build_errors)
             suggestions.append("Ensure Dockerfiles build without errors")
 
         # Stage 2.25: Alembic head check for schema-changing plans
         alembic_ok = True
-        if build_ok:
+        if build_ok and "backend" in impacted_services:
             alembic_ok, alembic_errors = await self._run_alembic_head_check(context)
             if not alembic_ok:
                 errors.extend(alembic_errors)
@@ -380,16 +442,16 @@ class DockerSandbox(BaseSandbox):
                 )
 
         # Stage 2.5: Backend startup smoke test
-        smoke_ok = False
-        if build_ok and alembic_ok:
+        smoke_ok = "backend" not in impacted_services
+        if build_ok and alembic_ok and "backend" in impacted_services:
             smoke_ok, smoke_errors = await self._run_backend_import_smoke_test()
             if not smoke_ok:
                 errors.extend(smoke_errors)
                 suggestions.append("Backend changes must import app.main successfully before deploy")
 
         # Stage 3: Integration test (only if build passed)
-        tests_ok = False
-        if build_ok and smoke_ok:
+        tests_ok = "backend" not in impacted_services
+        if build_ok and smoke_ok and "backend" in impacted_services:
             tests_ok, test_errors = await self._run_integration_tests(sandbox_app)
             if not tests_ok:
                 errors.extend(test_errors)
@@ -451,7 +513,12 @@ class DockerSandbox(BaseSandbox):
 
         return len(errors) == 0, errors
 
-    async def _run_build_test(self, app_path: Path) -> tuple[bool, list[str]]:
+    async def _run_build_test(
+        self,
+        app_path: Path,
+        *,
+        impacted_services: set[str],
+    ) -> tuple[bool, list[str]]:
         """Attempt to docker build each service.
 
         For the backend, tries the ``test`` stage first (for pytest). If that
@@ -461,6 +528,9 @@ class DockerSandbox(BaseSandbox):
         errors: list[str] = []
 
         for service in ["backend", "frontend"]:
+            if service not in impacted_services:
+                logger.info("build.skipped_unimpacted_service", service=service)
+                continue
             dockerfile = app_path / service / "Dockerfile"
             if not dockerfile.exists():
                 continue

@@ -1,6 +1,6 @@
-"""Tests for split chat/engine runtime settings resolution."""
+"""Tests for runtime settings resolution and engine budgets."""
 
-from app.system_settings import resolve_runtime_model, resolve_runtime_provider
+from app.system_settings import build_default_system_settings, resolve_runtime_model, resolve_runtime_provider
 
 
 def test_resolve_runtime_provider_prefers_scope_specific_value():
@@ -22,3 +22,18 @@ def test_resolve_runtime_model_falls_back_to_legacy_shared_value():
 
     assert resolve_runtime_model(values, "chat", "openai") == "gpt-5.3-codex"
     assert resolve_runtime_model(values, "engine", "openai") == "gpt-5.3-codex"
+
+
+def test_default_settings_include_engine_budget_keys():
+    defaults = build_default_system_settings()
+
+    for key in (
+        "engine_daily_llm_calls_limit",
+        "engine_daily_input_tokens_limit",
+        "engine_daily_output_tokens_limit",
+        "engine_daily_proactive_runs_limit",
+        "engine_daily_failed_evolutions_limit",
+        "engine_daily_task_attempt_limit",
+        "engine_daily_usage_snapshot",
+    ):
+        assert key in defaults

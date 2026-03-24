@@ -77,6 +77,9 @@ IMPORTANT CONSTRAINTS:
 - The repository map is the source of truth for existing frontend app module roots. Reuse the
   exact path it reports for an app and never create a sibling module that differs only by case,
   camelCase, spacing, or hyphenation.
+- The repository map is also the source of truth for notable static assets under
+  `frontend/public/`. Reuse those exact public asset paths and do not silently move or duplicate
+  them into app-module folders unless the change explicitly rewires all references.
 - When registering a desktop app, keep its frontend module key stable by using a slug derived
   from the app name (for example `Competitive Intelligence` -> `competitive-intelligence`).
 - If the repository map reports a path conflict for a frontend app root, plan a consolidation or

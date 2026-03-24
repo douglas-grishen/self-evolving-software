@@ -131,6 +131,8 @@ services:
       ENGINE_MANAGED_APP_PATH: /opt/evolved-app
       ENGINE_SELF_PATH: /workspace/evolving_engine
       ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
+      ENGINE_SANDBOX_TMP_DIR: /sandbox-tmp
+      ENGINE_USAGE_STATE_PATH: /opt/evolved-app/.engine-state/usage.json
       ENGINE_REPO_ROOT: /workspace
       ENGINE_GENESIS_PATH: /workspace/genesis.yaml
       ENGINE_PURPOSE_PATH: /workspace/purpose.yaml
@@ -161,6 +163,8 @@ services:
       - /opt/evolved-app:/opt/evolved-app
       # Docker socket for sandbox containers + reading managed system logs
       - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      - /sandbox-tmp:size=1536m,mode=1777
     networks:
       - autonomic-manager
       - control-plane
