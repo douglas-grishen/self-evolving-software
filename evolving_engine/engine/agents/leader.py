@@ -70,12 +70,17 @@ IMPORTANT CONSTRAINTS:
 - Treat the desktop's system windows and onboarding surfaces as platform capabilities, not
   disposable UI. Preserve Chat, Cost, Settings, Health, Timeline, Purpose, Tasks,
   Database, and Inceptions unless the request explicitly targets those platform surfaces.
-- Product apps must be implemented under `frontend/src/apps/<AppName>/` and expose a default
-  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Product apps must be implemented under `frontend/src/apps/<app-slug>/` and expose a default
+  component from `frontend/src/apps/<app-slug>/index.ts` or `index.tsx`.
 - Those app modules are mounted inside the existing desktop window system via
   `frontend/src/components/AppViewer.tsx`; do not replace the desktop shell.
+- The repository map is the source of truth for existing frontend app module roots. Reuse the
+  exact path it reports for an app and never create a sibling module that differs only by case,
+  camelCase, spacing, or hyphenation.
 - When registering a desktop app, keep its frontend module key stable by using a slug derived
   from the app name (for example `Competitive Intelligence` -> `competitive-intelligence`).
+- If the repository map reports a path conflict for a frontend app root, plan a consolidation or
+  stabilization slice before deepening that app further.
 - If a product app already has a mounted frontend surface, preserve its backend route contract
   and prefer returning a safe empty state over leaving the UI with HTTP 404 / missing endpoint
   failures.

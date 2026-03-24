@@ -56,6 +56,30 @@ class APIEndpoint(BaseModel):
     file_path: str = ""
 
 
+class FrontendAppModule(BaseModel):
+    """A desktop app module mounted under frontend/src/apps/."""
+
+    module_key: str
+    relative_path: str
+    canonical_key: str
+    has_entrypoint: bool = False
+
+
+class RepoPathConflict(BaseModel):
+    """A structural conflict where multiple paths map to the same canonical key."""
+
+    canonical_key: str
+    paths: list[str] = Field(default_factory=list)
+    description: str = ""
+
+
+class StaticAsset(BaseModel):
+    """A notable static asset present in frontend/public/."""
+
+    relative_path: str
+    size_bytes: int = 0
+
+
 class RepoMap(BaseModel):
     """Complete repository map — a token-efficient snapshot of the managed application.
 
@@ -67,6 +91,9 @@ class RepoMap(BaseModel):
     db_schema: DBSchema = Field(default_factory=DBSchema)
     dependencies: list[Dependency] = Field(default_factory=list)
     api_endpoints: list[APIEndpoint] = Field(default_factory=list)
+    frontend_app_modules: list[FrontendAppModule] = Field(default_factory=list)
+    path_conflicts: list[RepoPathConflict] = Field(default_factory=list)
+    public_assets: list[StaticAsset] = Field(default_factory=list)
     react_components: list[str] = Field(default_factory=list)
     alembic_revisions: list[str] = Field(default_factory=list)
     summary: str = ""  # High-level description of the current state
@@ -84,12 +111,36 @@ class RepoMap(BaseModel):
             for ep in self.api_endpoints:
                 parts.append(f"- {ep.method} {ep.path} ({ep.file_path})")
 
+        if self.frontend_app_modules:
+            parts.append("\n## Frontend App Modules")
+            for module in self.frontend_app_modules:
+                entrypoint = "entrypoint" if module.has_entrypoint else "missing-entrypoint"
+                parts.append(
+                    "- "
+                    f"{module.canonical_key} -> {module.relative_path} "
+                    f"(module_key={module.module_key}, {entrypoint})"
+                )
+
+        if self.path_conflicts:
+            parts.append("\n## Path Conflicts")
+            for conflict in self.path_conflicts:
+                parts.append(
+                    f"- {conflict.canonical_key}: {', '.join(conflict.paths)} "
+                    f":: {conflict.description}"
+                )
+
         # Database schema
         if self.db_schema.tables:
             parts.append("\n## Database Tables")
             for table in self.db_schema.tables:
                 cols = ", ".join(f"{c.name}:{c.data_type}" for c in table.columns)
                 parts.append(f"- {table.name} [{cols}]")
+
+        if self.public_assets:
+            parts.append("\n## Public Assets")
+            for asset in self.public_assets:
+                size_mb = asset.size_bytes / (1024 * 1024)
+                parts.append(f"- {asset.relative_path} ({size_mb:.1f} MB)")
 
         # React components
         if self.react_components:

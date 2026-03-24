@@ -10,7 +10,16 @@ from engine.models.evolution import (
     GeneratedFile,
     ValidationResult,
 )
-from engine.models.repo_map import DBColumn, DBSchema, DBTable, FileNode, RepoMap
+from engine.models.repo_map import (
+    DBColumn,
+    DBSchema,
+    DBTable,
+    FileNode,
+    FrontendAppModule,
+    RepoMap,
+    RepoPathConflict,
+    StaticAsset,
+)
 
 __all__ = [
     "DBColumn",
@@ -23,7 +32,10 @@ __all__ = [
     "EvolutionStatus",
     "FileChange",
     "FileNode",
+    "FrontendAppModule",
     "GeneratedFile",
     "RepoMap",
+    "RepoPathConflict",
+    "StaticAsset",
     "ValidationResult",
 ]

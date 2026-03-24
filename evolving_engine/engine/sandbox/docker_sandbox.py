@@ -19,6 +19,7 @@ import structlog
 from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext
 from engine.models.evolution import ValidationResult
+from engine.repo.scanner import canonicalize_frontend_app_key, extract_frontend_app_modules
 from engine.sandbox.base import BaseSandbox
 
 logger = structlog.get_logger()
@@ -215,6 +216,74 @@ def _validate_plan_contract(context: EvolutionContext) -> list[str]:
     return errors
 
 
+def _extract_frontend_app_root(relative_path: str) -> str | None:
+    """Return the top-level app module directory for frontend/src/apps/* paths."""
+    normalized = relative_path.lstrip("/").replace("\\", "/")
+    prefix = "frontend/src/apps/"
+    if not normalized.startswith(prefix):
+        return None
+
+    suffix = normalized[len(prefix):]
+    root = suffix.split("/", 1)[0].strip()
+    return root or None
+
+
+def _validate_frontend_app_structure(
+    app_path: Path,
+    context: EvolutionContext,
+) -> list[str]:
+    """Reject app-module casing drift and duplicate desktop app roots."""
+    errors: list[str] = []
+    modules, conflicts = extract_frontend_app_modules(app_path / "frontend")
+    module_by_slug: dict[str, str] = {}
+
+    for module in sorted(modules, key=lambda item: item.relative_path):
+        module_by_slug.setdefault(module.canonical_key, module.relative_path)
+
+    for conflict in conflicts:
+        errors.append(
+            "Frontend app module conflict: multiple roots resolve to "
+            f"`{conflict.canonical_key}` -> {', '.join(conflict.paths)}. "
+            f"Consolidate them into frontend/src/apps/{conflict.canonical_key}/ before "
+            "adding more product changes."
+        )
+
+    planned_paths = {
+        change.file_path.lstrip("/")
+        for change in (context.plan.changes if context.plan else [])
+    }
+    generated_paths = {
+        gen_file.file_path.lstrip("/")
+        for gen_file in context.generated_files
+    }
+
+    for relative_path in sorted(planned_paths | generated_paths):
+        module_root = _extract_frontend_app_root(relative_path)
+        if module_root is None:
+            continue
+
+        canonical_root = canonicalize_frontend_app_key(module_root)
+        expected_root = f"frontend/src/apps/{canonical_root}/"
+        actual_root = f"frontend/src/apps/{module_root}/"
+
+        if module_root != canonical_root:
+            errors.append(
+                "Frontend app module roots must use canonical desktop slugs. "
+                f"Use `{expected_root}` instead of `{actual_root}`."
+            )
+            continue
+
+        existing_root = module_by_slug.get(canonical_root)
+        if existing_root and existing_root != f"frontend/src/apps/{canonical_root}":
+            errors.append(
+                "Frontend app module root drift detected: slug "
+                f"`{canonical_root}` already maps to `{existing_root}`. Consolidate that "
+                "module before creating a sibling root."
+            )
+
+    return errors
+
+
 class DockerSandbox(BaseSandbox):
     """Sandbox that uses Docker to test generated code in isolation."""
 
@@ -223,6 +292,13 @@ class DockerSandbox(BaseSandbox):
         self.client = docker.from_env()
         self.temp_dir: Path | None = None
         self.containers: list[str] = []
+
+    def _resolve_validation_source_path(self) -> Path:
+        """Prefer the live evolved app so sandbox validation matches deployment reality."""
+        evolved_app_path = Path(self.config.evolved_app_path).resolve()
+        if (evolved_app_path / "frontend").exists() and (evolved_app_path / "backend").exists():
+            return evolved_app_path
+        return Path(self.config.managed_app_path).resolve()
 
     async def run_tests(self, context: EvolutionContext) -> ValidationResult:
         """Execute the three-stage validation pipeline."""
@@ -234,7 +310,7 @@ class DockerSandbox(BaseSandbox):
         sandbox_app = self.temp_dir / "managed_app"
 
         # Copy the current managed app into the sandbox
-        managed_app_src = Path(self.config.managed_app_path).resolve()
+        managed_app_src = self._resolve_validation_source_path()
         if managed_app_src.exists():
             shutil.copytree(managed_app_src, sandbox_app)
         else:
@@ -260,6 +336,14 @@ class DockerSandbox(BaseSandbox):
             errors.extend(contract_errors)
             suggestions.append(
                 "Ensure the generator emits every planned file, including required Alembic migrations."
+            )
+
+        structure_errors = _validate_frontend_app_structure(sandbox_app, context)
+        if structure_errors:
+            errors.extend(structure_errors)
+            suggestions.append(
+                "Use the canonical desktop app module roots from frontend/src/apps/ and "
+                "avoid casing or slug variants that create sibling app trees."
             )
 
         platform_errors = _validate_platform_contract_files(
@@ -315,6 +399,8 @@ class DockerSandbox(BaseSandbox):
         risk_score = 0.0
         if not static_ok:
             risk_score += 0.2
+        if structure_errors:
+            risk_score += 0.3
         if platform_errors:
             risk_score += 0.4
         if not build_ok:

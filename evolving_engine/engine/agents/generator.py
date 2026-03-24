@@ -103,12 +103,17 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - The desktop system windows are framework-owned resilience capabilities. Do NOT remove or break
   Chat, Cost, Settings, Health, Timeline, Purpose, Tasks, Database, or Inceptions while
   implementing product work.
-- Product app UIs must be added under `frontend/src/apps/<AppName>/` and export a default
-  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Product app UIs must be added under `frontend/src/apps/<app-slug>/` and export a default
+  component from `frontend/src/apps/<app-slug>/index.ts` or `index.tsx`.
 - Those app modules are opened through the existing `frontend/src/components/AppViewer.tsx`
   integration point instead of replacing the desktop shell.
+- The repository map is the source of truth for existing frontend app module roots. Reuse the
+  exact path it reports for an app and never create a sibling module that differs only by case,
+  camelCase, spacing, or hyphenation.
 - Match the desktop app's frontend module key to a slug of the app name (for example
   `Competitive Intelligence` -> `competitive-intelligence`) so the shell can launch it reliably.
+- If the repository map reports a path conflict for a frontend app root, the safe move is to
+  consolidate or stabilize that app instead of adding more files under a new variant path.
 - If a mounted app depends on backend endpoints, preserve that route contract. When the data
   layer is incomplete, return a valid empty-state response rather than leaving the frontend to
   hit HTTP 404.

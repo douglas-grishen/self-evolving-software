@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from engine.providers.anthropic_provider import AnthropicProvider
 from engine.providers.base import BaseLLMProvider
 from engine.providers.bedrock_provider import BedrockProvider
 from engine.providers.openai_provider import OpenAIProvider
+from engine.repo.scanner import build_repo_map, canonicalize_frontend_app_key
 from engine.sandbox.base import BaseSandbox
 from engine.sandbox.docker_sandbox import DockerSandbox
 
@@ -99,7 +101,20 @@ _TRANSIENT_BACKLOG_ERROR_PATTERNS = (
 
 def _frontend_entry_key(app_name: str) -> str:
     """Generate the stable frontend module key for a desktop app."""
-    return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", app_name.strip().lower()))
+    return canonicalize_frontend_app_key(app_name)
+
+
+@dataclass
+class BacklogProbeState:
+    """Operational view of whether the persisted backlog can advance."""
+
+    actionable_item: BacklogItem | None = None
+    blocked_frontier_item: BacklogItem | None = None
+    non_terminal_count: int = 0
+
+    @property
+    def is_stalled(self) -> bool:
+        return self.actionable_item is None and self.blocked_frontier_item is not None
 
 
 class Orchestrator:
@@ -475,13 +490,28 @@ class Orchestrator:
                         )
                         should_run_proactive = True
                     elif elapsed >= 60:
-                        actionable_backlog_item = await self._peek_actionable_backlog_item()
+                        backlog_probe = await self._probe_backlog_state()
+                        actionable_backlog_item = (
+                            backlog_probe.actionable_item if backlog_probe else None
+                        )
                         if actionable_backlog_item is not None:
                             logger.info(
                                 "proactive.backlog_pending_trigger",
                                 item_id=actionable_backlog_item.id,
                                 task_key=actionable_backlog_item.task_key,
                                 status=actionable_backlog_item.status.value,
+                            )
+                            should_run_proactive = True
+                        elif (
+                            backlog_probe
+                            and backlog_probe.is_stalled
+                            and elapsed >= _BACKLOG_TRANSIENT_RETRY_SECONDS
+                        ):
+                            blocked_item = backlog_probe.blocked_frontier_item
+                            logger.info(
+                                "proactive.backlog_stalled_trigger",
+                                task_key=blocked_item.task_key if blocked_item else None,
+                                status=blocked_item.status.value if blocked_item else None,
                             )
                             should_run_proactive = True
 
@@ -713,7 +743,15 @@ class Orchestrator:
             )
             current_hash = hashlib.sha256(cache_input.encode()).hexdigest()[:16]
             backlog_items = existing_backlog
-            if current_hash != self._last_backlog_hash or not existing_backlog:
+            replan_reason = self._backlog_replan_reason(existing_backlog)
+            should_refresh_backlog = (
+                current_hash != self._last_backlog_hash
+                or not existing_backlog
+                or replan_reason is not None
+            )
+            if should_refresh_backlog:
+                if replan_reason is not None:
+                    logger.info("proactive.backlog_force_replan", reason=replan_reason)
                 plan = await self._plan_proactive_backlog(
                     codebase_summary=codebase_summary,
                     apps_summary=apps_summary,
@@ -741,15 +779,19 @@ class Orchestrator:
             else:
                 logger.info("proactive.backlog_cache_hit", hash=current_hash)
 
-            next_item = self._select_next_backlog_item(backlog_items)
+            backlog_probe = self._inspect_backlog_items(backlog_items)
+            next_item = backlog_probe.actionable_item
             if next_item is None:
-                non_terminal_count = sum(
-                    1
-                    for item in backlog_items
-                    if item.status not in {BacklogTaskStatus.DONE, BacklogTaskStatus.ABANDONED}
-                )
+                non_terminal_count = backlog_probe.non_terminal_count
                 if non_terminal_count == 0:
                     logger.info("proactive.backlog_complete", purpose_version=self.purpose.version)
+                elif backlog_probe.blocked_frontier_item is not None:
+                    logger.info(
+                        "proactive.backlog_stalled",
+                        purpose_version=self.purpose.version,
+                        task_key=backlog_probe.blocked_frontier_item.task_key,
+                        status=backlog_probe.blocked_frontier_item.status.value,
+                    )
                 else:
                     logger.info(
                         "proactive.backlog_waiting",
@@ -813,10 +855,15 @@ set of tasks that can be executed across multiple autonomous runs.
 - The desktop's system windows and onboarding surfaces are platform capabilities. Do not
   remove Chat, Cost, Settings, Health, Timeline, Purpose, Tasks, Database, or Inceptions
   while planning product work.
-- Frontend app slices should live under `frontend/src/apps/<AppName>/` and expose a default
-  component from `frontend/src/apps/<AppName>/index.ts` or `index.tsx`.
+- Frontend app slices should live under `frontend/src/apps/<app-slug>/` and expose a default
+  component from `frontend/src/apps/<app-slug>/index.ts` or `index.tsx`.
+- The repository map is the source of truth for existing frontend app module roots. Reuse the
+  exact path it reports for an app; never invent a sibling root that differs only by case,
+  camelCase, spacing, or hyphenation.
 - Use a stable slug of the desktop app name as the frontend module key, for example
   `Competitive Intelligence` -> `competitive-intelligence`.
+- If the repository map reports a path conflict for an app module root, plan a consolidation
+  or stabilization slice before deepening that app further.
 - Do not replace the shell itself when planning or executing product-app work.
 - If a mounted app already has a frontend surface, prioritize keeping its backend contract
   live with safe empty-state responses over adding more scaffolding behind broken endpoints.
@@ -885,8 +932,13 @@ set of tasks that can be executed across multiple autonomous runs.
 
     def _select_next_backlog_item(self, items: list[BacklogItem]) -> BacklogItem | None:
         """Pick the next actionable backlog item, preferring resumed work and ready retries."""
+        return self._inspect_backlog_items(items).actionable_item
+
+    def _inspect_backlog_items(self, items: list[BacklogItem]) -> BacklogProbeState:
+        """Summarize whether the backlog can advance or is stalled on blocked work."""
+        state = BacklogProbeState()
         if not items:
-            return None
+            return state
 
         now = datetime.now(timezone.utc)
         ordered = sorted(items, key=lambda item: self._backlog_sort_key(item))
@@ -895,15 +947,45 @@ set of tasks that can be executed across multiple autonomous runs.
             for item in ordered
             if item.status == BacklogTaskStatus.DONE
         }
+        blocked_keys = {
+            item.task_key
+            for item in ordered
+            if item.status == BacklogTaskStatus.BLOCKED
+        }
 
         for item in ordered:
+            if item.status in {BacklogTaskStatus.DONE, BacklogTaskStatus.ABANDONED}:
+                continue
+
+            state.non_terminal_count += 1
+            dependencies_satisfied = all(dep in completed_keys for dep in item.depends_on)
+
+            if state.blocked_frontier_item is None:
+                if item.status == BacklogTaskStatus.BLOCKED:
+                    state.blocked_frontier_item = item
+                elif any(dep in blocked_keys for dep in item.depends_on):
+                    state.blocked_frontier_item = item
+
+            if state.actionable_item is not None:
+                continue
             if item.status not in {BacklogTaskStatus.IN_PROGRESS, BacklogTaskStatus.PENDING}:
                 continue
-            if not all(dep in completed_keys for dep in item.depends_on):
+            if not dependencies_satisfied:
                 continue
             if item.retry_after and item.retry_after > now:
                 continue
-            return item
+            state.actionable_item = item
+
+        return state
+
+    def _backlog_replan_reason(self, items: list[BacklogItem]) -> str | None:
+        """Return a reason when the persisted roadmap should be recomputed immediately."""
+        state = self._inspect_backlog_items(items)
+        if state.is_stalled and state.blocked_frontier_item is not None:
+            return (
+                "blocked_frontier:"
+                f"{state.blocked_frontier_item.task_key}:{state.blocked_frontier_item.status.value}"
+            )
         return None
 
     def _backlog_sort_key(self, item: BacklogItem) -> tuple[int, int, int, datetime]:
@@ -920,6 +1002,11 @@ set of tasks that can be executed across multiple autonomous runs.
 
     async def _peek_actionable_backlog_item(self) -> BacklogItem | None:
         """Return the next actionable backlog item without mutating planner state."""
+        backlog_probe = await self._probe_backlog_state()
+        return backlog_probe.actionable_item if backlog_probe else None
+
+    async def _probe_backlog_state(self) -> BacklogProbeState | None:
+        """Fetch the current backlog and summarize whether it can advance."""
         if not self.purpose:
             return None
 
@@ -931,7 +1018,7 @@ set of tasks that can be executed across multiple autonomous runs.
             logger.debug("proactive.backlog_probe_unavailable")
             return None
 
-        return self._select_next_backlog_item(backlog_items)
+        return self._inspect_backlog_items(backlog_items)
 
     async def _execute_backlog_item(self, item: BacklogItem) -> bool:
         """Execute one persisted backlog item and update its state."""
@@ -1245,6 +1332,12 @@ set of tasks that can be executed across multiple autonomous runs.
         Scans key files (routes, models, components) to understand what's implemented.
         """
         summary_parts: list[str] = []
+
+        try:
+            repo_map = build_repo_map(app_path)
+            summary_parts.append(repo_map.to_context_string(max_chars=4000))
+        except Exception as exc:
+            logger.debug("proactive.repo_map_summary_failed", error=str(exc))
 
         # Scan backend
         backend_path = app_path / "backend" if (app_path / "backend").exists() else app_path

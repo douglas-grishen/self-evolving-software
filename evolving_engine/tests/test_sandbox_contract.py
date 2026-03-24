@@ -2,9 +2,12 @@
 
 from pathlib import Path
 
+from engine.config import EngineSettings
 from engine.context import create_context
 from engine.models.evolution import EvolutionPlan, FileChange, GeneratedFile
 from engine.sandbox.docker_sandbox import (
+    DockerSandbox,
+    _validate_frontend_app_structure,
     _validate_plan_contract,
     _validate_platform_contract_files,
 )
@@ -296,3 +299,81 @@ def test_platform_contract_allows_explicit_shell_redesign(tmp_path: Path):
     errors = _validate_platform_contract_files(tmp_path, "Redesign desktop shell and window manager")
 
     assert errors == []
+
+
+def test_frontend_app_structure_rejects_noncanonical_module_root(tmp_path: Path):
+    """Sandbox should reject CamelCase sibling roots when the slugged root exists."""
+    _write(
+        tmp_path,
+        "frontend/src/apps/competitive-intelligence/index.tsx",
+        "export default function CompetitiveIntelligence() { return null; }",
+    )
+    ctx = create_context("Improve competitive intelligence timeline")
+    ctx = ctx.model_copy(
+        update={
+            "plan": EvolutionPlan(
+                summary="Add timeline view",
+                changes=[
+                    FileChange(
+                        file_path="frontend/src/apps/CompetitiveIntelligence/Timeline.tsx",
+                        action="create",
+                        description="Add timeline surface",
+                        layer="frontend",
+                    )
+                ],
+                requires_migration=False,
+                risk_level="medium",
+                reasoning="Add UI slice",
+            ),
+            "generated_files": [
+                GeneratedFile(
+                    file_path="frontend/src/apps/CompetitiveIntelligence/Timeline.tsx",
+                    content="export function Timeline() { return null; }",
+                    action="create",
+                    layer="frontend",
+                )
+            ],
+        }
+    )
+
+    errors = _validate_frontend_app_structure(tmp_path, ctx)
+
+    assert any("canonical desktop slugs" in error for error in errors)
+    assert any("frontend/src/apps/competitive-intelligence/" in error for error in errors)
+
+
+def test_frontend_app_structure_detects_duplicate_module_roots(tmp_path: Path):
+    """Sandbox should fail fast when the snapshot already contains conflicting app roots."""
+    _write(
+        tmp_path,
+        "frontend/src/apps/CompanyDiscovery/index.tsx",
+        "export default function CompanyDiscovery() { return null; }",
+    )
+    _write(
+        tmp_path,
+        "frontend/src/apps/company-discovery/index.tsx",
+        "export default function CompanyDiscoveryCanonical() { return null; }",
+    )
+    ctx = create_context("Stabilize company discovery")
+
+    errors = _validate_frontend_app_structure(tmp_path, ctx)
+
+    assert any("multiple roots resolve to `company-discovery`" in error for error in errors)
+
+
+def test_sandbox_prefers_evolved_app_source_when_present(tmp_path: Path):
+    """Validation should copy the live evolved app when it exists."""
+    managed_app = tmp_path / "managed_app"
+    evolved_app = tmp_path / "evolved_app"
+    (managed_app / "frontend").mkdir(parents=True)
+    (managed_app / "backend").mkdir(parents=True)
+    (evolved_app / "frontend").mkdir(parents=True)
+    (evolved_app / "backend").mkdir(parents=True)
+
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox.config = EngineSettings(
+        managed_app_path=managed_app,
+        evolved_app_path=evolved_app,
+    )
+
+    assert sandbox._resolve_validation_source_path() == evolved_app.resolve()

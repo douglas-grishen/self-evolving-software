@@ -40,9 +40,16 @@ class DataManagerAgent(BaseAgent):
     def name(self) -> str:
         return "data_manager"
 
+    def _resolve_app_path(self) -> Path:
+        """Prefer the live evolved app when it exists so planning matches deployment."""
+        evolved_app_path = Path(self.config.evolved_app_path).resolve()
+        if (evolved_app_path / "frontend").exists() and (evolved_app_path / "backend").exists():
+            return evolved_app_path
+        return Path(self.managed_app_path).resolve()
+
     async def _execute(self, ctx: EvolutionContext) -> EvolutionContext:
         """Scan the repository and attach the RepoMap + lessons to the context."""
-        app_path = Path(self.managed_app_path).resolve()
+        app_path = self._resolve_app_path()
 
         if not app_path.exists():
             return ctx.fail(f"Managed app path does not exist: {app_path}")

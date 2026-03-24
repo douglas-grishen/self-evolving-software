@@ -127,6 +127,63 @@ def test_select_next_backlog_item_skips_retry_cooldown_and_keeps_moving():
     assert selected.task_key == "company_export"
 
 
+def test_inspect_backlog_items_marks_blocked_frontier_when_dependencies_are_blocked():
+    """A blocked task should surface as backlog stall pressure for replanning."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="timeline_build",
+            sequence=1,
+            status=BacklogTaskStatus.BLOCKED,
+        ),
+        _backlog_item(
+            item_id="2",
+            task_key="company_export",
+            sequence=2,
+            status=BacklogTaskStatus.PENDING,
+            depends_on=["timeline_build"],
+        ),
+    ]
+
+    state = orchestrator._inspect_backlog_items(items)
+
+    assert state.actionable_item is None
+    assert state.blocked_frontier_item is not None
+    assert state.blocked_frontier_item.task_key == "timeline_build"
+    assert state.is_stalled is True
+
+
+def test_backlog_replan_reason_is_none_for_retry_cooldown_only():
+    """Cooling tasks should wait, not force an immediate roadmap rewrite."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="timeline_build",
+            sequence=1,
+            retry_after=datetime.now(timezone.utc) + timedelta(minutes=5),
+        ),
+    ]
+
+    assert orchestrator._backlog_replan_reason(items) is None
+
+
+def test_backlog_replan_reason_reports_blocked_frontier():
+    """Blocked backlog fronts should force a replan instead of an idle wait."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="timeline_build",
+            sequence=1,
+            status=BacklogTaskStatus.BLOCKED,
+        ),
+    ]
+
+    assert orchestrator._backlog_replan_reason(items) == "blocked_frontier:timeline_build:blocked"
+
+
 @pytest.mark.asyncio
 async def test_peek_actionable_backlog_item_uses_completed_dependencies():
     """Backlog probing should consider done tasks so dependent pending work can resume."""
