@@ -2,9 +2,10 @@
 
 import pytest
 
-from engine.agents.leader import LeaderAgent
+from engine.agents.leader import LeaderAgent, _sanitize_plan
 from engine.context import create_context
-from engine.models.evolution import EvolutionPlan, EvolutionStatus
+from engine.models.evolution import EvolutionPlan, EvolutionStatus, FileChange
+from engine.models.repo_map import FileNode, RepoMap
 from engine.providers.base import BaseLLMProvider
 
 
@@ -66,3 +67,86 @@ async def test_leader_audit_trail():
 
     assert any(e.agent == "leader" and e.status == "started" for e in result.history)
     assert any(e.agent == "leader" and e.status == "completed" for e in result.history)
+
+
+def test_sanitize_plan_normalizes_legacy_frontend_paths():
+    repo_map = RepoMap(
+        tree=FileNode(
+            path=".",
+            name=".",
+            is_dir=True,
+            children=[
+                FileNode(
+                    path="frontend",
+                    name="frontend",
+                    is_dir=True,
+                    children=[
+                        FileNode(
+                            path="frontend/src",
+                            name="src",
+                            is_dir=True,
+                            children=[
+                                FileNode(
+                                    path="frontend/src/apps",
+                                    name="apps",
+                                    is_dir=True,
+                                    children=[
+                                        FileNode(
+                                            path="frontend/src/apps/registry.tsx",
+                                            name="registry.tsx",
+                                            is_dir=False,
+                                        ),
+                                        FileNode(
+                                            path="frontend/src/apps/competitive-intelligence",
+                                            name="competitive-intelligence",
+                                            is_dir=True,
+                                            children=[
+                                                FileNode(
+                                                    path="frontend/src/apps/competitive-intelligence/index.tsx",
+                                                    name="index.tsx",
+                                                    is_dir=False,
+                                                )
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+    plan = EvolutionPlan(
+        summary="Normalize app roots",
+        risk_level="low",
+        reasoning="",
+        changes=[
+            FileChange(
+                file_path="frontend/src/config/apps.ts",
+                action="modify",
+                description="legacy registry update",
+                layer="frontend",
+            ),
+            FileChange(
+                file_path="frontend/src/apps/CompetitiveIntelligence/index.tsx",
+                action="modify",
+                description="camel-case duplicate",
+                layer="frontend",
+            ),
+            FileChange(
+                file_path="frontend/src/apps/competitive-intelligence/index.tsx",
+                action="modify",
+                description="canonical entry",
+                layer="frontend",
+            ),
+        ],
+    )
+
+    sanitized = _sanitize_plan(plan, repo_map)
+    assert [change.file_path for change in sanitized.changes] == [
+        "frontend/src/apps/registry.tsx",
+        "frontend/src/apps/competitive-intelligence/index.tsx",
+    ]
+    assert "camel-case duplicate" in sanitized.changes[1].description
+    assert "canonical entry" in sanitized.changes[1].description

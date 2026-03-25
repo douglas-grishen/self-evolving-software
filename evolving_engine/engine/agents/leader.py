@@ -10,11 +10,15 @@ Responsibilities (MAPE-K: Monitor + Plan):
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from engine.agents.base import BaseAgent
 from engine.context import EvolutionContext
-from engine.models.evolution import EvolutionPlan, EvolutionStatus
+from engine.models.evolution import EvolutionPlan, EvolutionStatus, FileChange
 from engine.models.purpose import Purpose
+from engine.models.repo_map import FileNode, RepoMap
 from engine.providers.base import BaseLLMProvider
+from engine.repo.scanner import canonicalize_frontend_app_key
 
 SYSTEM_PROMPT = """You are the Lead Architect of a self-evolving software system.
 
@@ -74,6 +78,9 @@ IMPORTANT CONSTRAINTS:
   component from `frontend/src/apps/<app-slug>/index.ts` or `index.tsx`.
 - Those app modules are mounted inside the existing desktop window system via
   `frontend/src/components/AppViewer.tsx`; do not replace the desktop shell.
+- The desktop app registry lives in `frontend/src/apps/registry.tsx`. Do not plan or recreate
+  legacy registration files such as `frontend/src/config/apps.ts` unless the repository map
+  explicitly shows that file exists.
 - The repository map is the source of truth for existing frontend app module roots. Reuse the
   exact path it reports for an app and never create a sibling module that differs only by case,
   camelCase, spacing, or hyphenation.
@@ -89,6 +96,97 @@ IMPORTANT CONSTRAINTS:
   failures.
 
 Be precise. Every file that needs to change must be listed. Think step by step."""
+
+_FRONTEND_APPS_PREFIX = "frontend/src/apps/"
+_LEGACY_APP_REGISTRY_PATH = "frontend/src/config/apps.ts"
+_CANONICAL_APP_REGISTRY_PATH = "frontend/src/apps/registry.tsx"
+
+
+def _iter_repo_paths(node: FileNode | None, prefix: str = "") -> set[str]:
+    """Flatten repo-map file nodes into a searchable set of relative paths."""
+    if node is None:
+        return set()
+
+    name = node.name.strip("./")
+    current = "/".join(part for part in [prefix, name] if part).strip("/")
+    if node.is_dir:
+        result: set[str] = set()
+        for child in node.children:
+            result.update(_iter_repo_paths(child, current))
+        return result
+
+    return {current}
+
+
+def _repo_has_path(repo_map: RepoMap | None, relative_path: str) -> bool:
+    if repo_map is None:
+        return False
+    paths = _iter_repo_paths(repo_map.tree)
+    return relative_path in paths
+
+
+def _normalize_frontend_change_path(path: str, repo_map: RepoMap | None) -> str:
+    normalized = path.lstrip("/").replace("\\", "/")
+
+    if normalized == _LEGACY_APP_REGISTRY_PATH and (
+        _repo_has_path(repo_map, _CANONICAL_APP_REGISTRY_PATH)
+        and not _repo_has_path(repo_map, _LEGACY_APP_REGISTRY_PATH)
+    ):
+        return _CANONICAL_APP_REGISTRY_PATH
+
+    if not normalized.startswith(_FRONTEND_APPS_PREFIX):
+        return normalized
+
+    suffix = normalized[len(_FRONTEND_APPS_PREFIX):]
+    module_root, separator, remainder = suffix.partition("/")
+    if not module_root:
+        return normalized
+
+    canonical_root = canonicalize_frontend_app_key(module_root)
+    if canonical_root == module_root:
+        return normalized
+
+    return (
+        f"{_FRONTEND_APPS_PREFIX}{canonical_root}/{remainder}"
+        if separator
+        else f"{_FRONTEND_APPS_PREFIX}{canonical_root}"
+    )
+
+
+def _merge_change(existing: FileChange, new_change: FileChange) -> FileChange:
+    """Collapse duplicate plan entries after path normalization."""
+    descriptions = OrderedDict.fromkeys(
+        description
+        for description in [existing.description, new_change.description]
+        if description
+    )
+    description = " ".join(descriptions)
+    action = existing.action
+    if existing.action != new_change.action:
+        action = "modify" if "modify" in {existing.action, new_change.action} else existing.action
+    layer = existing.layer or new_change.layer
+    return existing.model_copy(
+        update={
+            "action": action,
+            "description": description,
+            "layer": layer,
+        }
+    )
+
+
+def _sanitize_plan(plan: EvolutionPlan, repo_map: RepoMap | None) -> EvolutionPlan:
+    """Normalize plan paths so downstream agents target the actual repo layout."""
+    deduped: OrderedDict[str, FileChange] = OrderedDict()
+
+    for change in plan.changes:
+        normalized_path = _normalize_frontend_change_path(change.file_path, repo_map)
+        normalized_change = change.model_copy(update={"file_path": normalized_path})
+        if normalized_path in deduped:
+            deduped[normalized_path] = _merge_change(deduped[normalized_path], normalized_change)
+        else:
+            deduped[normalized_path] = normalized_change
+
+    return plan.model_copy(update={"changes": list(deduped.values())})
 
 
 class LeaderAgent(BaseAgent):
@@ -132,6 +230,7 @@ class LeaderAgent(BaseAgent):
             response_model=EvolutionPlan,
             model_override="fast",
         )
+        plan = _sanitize_plan(plan, ctx.repo_map)
 
         self.logger.info(
             "plan.generated",

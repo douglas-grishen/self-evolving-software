@@ -8,6 +8,7 @@ Responsibilities (MAPE-K: Plan + Execute):
 """
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,9 +16,11 @@ from pydantic import BaseModel, Field
 
 from engine.agents.base import BaseAgent
 from engine.context import EvolutionContext
+from engine.models.repo_map import FileNode, RepoMap
 from engine.models.evolution import EvolutionStatus, GeneratedFile
 from engine.models.memory import EngineMemory
 from engine.providers.base import BaseLLMProvider
+from engine.repo.scanner import canonicalize_frontend_app_key
 
 SYSTEM_PROMPT = """You are an expert full-stack code generator for a self-evolving software system.
 
@@ -107,6 +110,8 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
   component from `frontend/src/apps/<app-slug>/index.ts` or `index.tsx`.
 - Those app modules are opened through the existing `frontend/src/components/AppViewer.tsx`
   integration point instead of replacing the desktop shell.
+- The desktop app registry lives in `frontend/src/apps/registry.tsx`. Do not recreate or write
+  to `frontend/src/config/apps.ts` unless the repository map explicitly shows that file exists.
 - The repository map is the source of truth for existing frontend app module roots. Reuse the
   exact path it reports for an app and never create a sibling module that differs only by case,
   camelCase, spacing, or hyphenation.
@@ -129,6 +134,9 @@ Respond with a JSON array of file objects."""
 _SENTINEL = "\nRespond with a JSON array of file objects."
 _MAX_INJECTED_LESSONS = 30
 _SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+_FRONTEND_APPS_PREFIX = "frontend/src/apps/"
+_LEGACY_APP_REGISTRY_PATH = "frontend/src/config/apps.ts"
+_CANONICAL_APP_REGISTRY_PATH = "frontend/src/apps/registry.tsx"
 
 
 def _build_lessons_section(lessons: list[EngineMemory]) -> str:
@@ -164,6 +172,55 @@ def _build_lessons_section(lessons: list[EngineMemory]) -> str:
 class GeneratedFileList(BaseModel):
     """Wrapper for structured LLM output."""
     files: list[GeneratedFile] = Field(default_factory=list)
+
+
+def _iter_repo_paths(node: FileNode | None, prefix: str = "") -> set[str]:
+    if node is None:
+        return set()
+
+    name = node.name.strip("./")
+    current = "/".join(part for part in [prefix, name] if part).strip("/")
+    if node.is_dir:
+        result: set[str] = set()
+        for child in node.children:
+            result.update(_iter_repo_paths(child, current))
+        return result
+
+    return {current}
+
+
+def _repo_has_path(repo_map: RepoMap | None, relative_path: str) -> bool:
+    if repo_map is None:
+        return False
+    return relative_path in _iter_repo_paths(repo_map.tree)
+
+
+def _normalize_frontend_file_path(path: str, repo_map: RepoMap | None) -> str:
+    normalized = path.lstrip("/").replace("\\", "/")
+
+    if normalized == _LEGACY_APP_REGISTRY_PATH and (
+        _repo_has_path(repo_map, _CANONICAL_APP_REGISTRY_PATH)
+        and not _repo_has_path(repo_map, _LEGACY_APP_REGISTRY_PATH)
+    ):
+        return _CANONICAL_APP_REGISTRY_PATH
+
+    if not normalized.startswith(_FRONTEND_APPS_PREFIX):
+        return normalized
+
+    suffix = normalized[len(_FRONTEND_APPS_PREFIX):]
+    module_root, separator, remainder = suffix.partition("/")
+    if not module_root:
+        return normalized
+
+    canonical_root = canonicalize_frontend_app_key(module_root)
+    if canonical_root == module_root:
+        return normalized
+
+    return (
+        f"{_FRONTEND_APPS_PREFIX}{canonical_root}/{remainder}"
+        if separator
+        else f"{_FRONTEND_APPS_PREFIX}{canonical_root}"
+    )
 
 
 class CodeGeneratorAgent(BaseAgent):
@@ -251,7 +308,7 @@ class CodeGeneratorAgent(BaseAgent):
             "backend/alembic/env.py",          # alembic env — must not be overwritten
         }
 
-        allowed_files = []
+        normalized_files: OrderedDict[str, GeneratedFile] = OrderedDict()
         for gen_file in result.files:
             fp = gen_file.file_path.lstrip("/")
             if any(fp.startswith(p) for p in FORBIDDEN_PREFIXES) or fp in FORBIDDEN_EXACT:
@@ -260,8 +317,18 @@ class CodeGeneratorAgent(BaseAgent):
                     path=gen_file.file_path,
                 )
                 continue
-            allowed_files.append(gen_file)
 
+            normalized_path = _normalize_frontend_file_path(fp, ctx.repo_map)
+            if normalized_path != fp:
+                self.logger.info(
+                    "generator.normalized_path",
+                    from_path=gen_file.file_path,
+                    to_path=normalized_path,
+                )
+            normalized_file = gen_file.model_copy(update={"file_path": normalized_path})
+            normalized_files[normalized_path] = normalized_file
+
+        allowed_files = list(normalized_files.values())
         skipped = len(result.files) - len(allowed_files)
         if skipped:
             self.logger.warning("generator.forbidden_files_skipped", count=skipped)
