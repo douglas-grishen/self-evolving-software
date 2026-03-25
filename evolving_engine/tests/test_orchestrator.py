@@ -235,6 +235,27 @@ def test_proactive_budget_status_blocks_when_daily_llm_calls_are_exhausted():
     assert snapshot["llm_calls"] == 5
 
 
+def test_build_request_from_anomaly_tolerates_string_latency_values():
+    """Runtime anomaly evidence can arrive as strings and must not crash the loop."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(monitor_latency_threshold_ms=800.0)
+    anomaly = SimpleNamespace(
+        type=orchestrator_module.AnomalyType.HIGH_LATENCY,
+        evidence={"method": "GET", "path": "/api/v1/apps", "avg_latency_ms": "950"},
+        description="Slow endpoint",
+    )
+    snapshot = SimpleNamespace(
+        recent_errors=[],
+        global_error_rate=0.0,
+        total_errors=0,
+        total_requests=10,
+    )
+
+    request = orchestrator._build_request_from_anomaly(anomaly, snapshot)
+
+    assert "950ms average latency" in request
+
+
 @pytest.mark.asyncio
 async def test_peek_actionable_backlog_item_uses_completed_dependencies():
     """Backlog probing should consider done tasks so dependent pending work can resume."""

@@ -754,6 +754,12 @@ class Orchestrator:
             )
             error_context = f"\n\nRecent errors observed at runtime:\n{formatted}"
 
+        latency_raw = anomaly.evidence.get("avg_latency_ms", "?")
+        try:
+            latency_display = f"{float(latency_raw):.0f}"
+        except (TypeError, ValueError):
+            latency_display = str(latency_raw)
+
         templates: dict[AnomalyType, str] = {
             AnomalyType.HIGH_ERROR_RATE: (
                 f"The Managed System has a {snapshot.global_error_rate:.1%} error rate "
@@ -767,7 +773,7 @@ class Orchestrator:
             AnomalyType.HIGH_LATENCY: (
                 f"The endpoint {anomaly.evidence.get('method')} "
                 f"{anomaly.evidence.get('path')} has degraded to "
-                f"{anomaly.evidence.get('avg_latency_ms', '?'):.0f}ms average latency "
+                f"{latency_display}ms average latency "
                 f"(threshold: {self.config.monitor_latency_threshold_ms:.0f}ms). "
                 f"Profile the endpoint, identify the bottleneck (missing index, N+1 query, "
                 f"or missing cache), and implement the fix."

@@ -317,7 +317,7 @@ async def sync_backlog(
             item_data["app_spec"] = app_spec
 
         if record:
-            preserve_blocked_state = record.status == "blocked" and item.status.value == "pending"
+            preserve_blocked_state = record.status == "blocked" and item.status == "pending"
             for field, value in item_data.items():
                 if field == "status" and record.status in {"done", "abandoned"}:
                     continue
