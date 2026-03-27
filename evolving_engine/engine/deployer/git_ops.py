@@ -34,6 +34,7 @@ logger = structlog.get_logger()
 _RESTART_HEALTH_TIMEOUT_SECONDS = 45.0
 _RESTART_HEALTH_POLL_SECONDS = 2.0
 _RESTART_HEALTH_PATHS = ("/health", "/api/v1/health", "/api/v1/system/info")
+_DEPLOY_VERSION_RE = re.compile(r"DEPLOY_VERSION(?:\s*:\s*[^=]+)?\s*=\s*(\d+)")
 
 
 class LocalDeployer:
@@ -212,7 +213,7 @@ class LocalDeployer:
         if version_file.exists():
             try:
                 content = version_file.read_text()
-                m = re.search(r"DEPLOY_VERSION\s*=\s*(\d+)", content)
+                m = _DEPLOY_VERSION_RE.search(content)
                 if m:
                     current = int(m.group(1))
             except Exception:
@@ -221,7 +222,8 @@ class LocalDeployer:
         new_version = current + 1
         version_file.parent.mkdir(parents=True, exist_ok=True)
         version_file.write_text(
-            '"""Auto-generated deploy version — updated by the Self-Evolving Engine on each deploy.\n\n'
+            '"""Auto-generated deploy version — updated by the '
+            'Self-Evolving Engine on each deploy.\n\n'
             "Do NOT edit manually. The engine increments this counter after every successful\n"
             "code deployment so the UI can display how many autonomous evolutions have run.\n"
             '"""\n\n'
@@ -292,7 +294,7 @@ class LocalDeployer:
             logger.info("deploy.restart_success", health_url=self.config.monitor_url)
             return True, "Services rebuilt and restarted"
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False, "Docker rebuild/restart timed out"
         except Exception as exc:
             return False, str(exc)
