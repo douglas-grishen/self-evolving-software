@@ -235,9 +235,11 @@ ARCHITECTURE
 async def _get_runtime_settings(db: AsyncSession) -> dict[str, str]:
     """Fetch chat runtime settings once so chat uses a coherent provider snapshot."""
     result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key.in_(_LLM_SETTING_KEYS))
+        select(SystemSetting.key, SystemSetting.value).where(
+            SystemSetting.key.in_(_LLM_SETTING_KEYS)
+        )
     )
-    values = {setting.key: setting.value for setting in result.scalars().all()}
+    values = {key: value for key, value in result.all()}
 
     provider = resolve_runtime_provider(
         values,
