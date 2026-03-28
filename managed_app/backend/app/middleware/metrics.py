@@ -22,6 +22,8 @@ from starlette.responses import Response
 _MAX_ERRORS = 200       # last N errors kept in memory
 _MAX_SLOW = 100         # last N slow requests kept in memory
 _SLOW_THRESHOLD_MS = 500
+_INTERNAL_PROBE_HEADER = "x-ses-probe"
+_INTERNAL_PROBE_VALUES = {"runtime-contract"}
 
 # Counters
 _request_count: int = 0
@@ -51,48 +53,54 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         start = time.monotonic()
         key = f"{request.method}:{request.url.path}"
         status_code = 500
+        is_internal_probe = (
+            request.headers.get(_INTERNAL_PROBE_HEADER, "").strip().lower()
+            in _INTERNAL_PROBE_VALUES
+        )
 
         try:
             response = await call_next(request)
             status_code = response.status_code
             return response
         except Exception as exc:
-            _recent_errors.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": request.method,
-                "path": request.url.path,
-                "error_type": type(exc).__name__,
-                "detail": str(exc)[:300],
-                "status_code": 500,
-            })
-            _error_count += 1
-            raise
-        finally:
-            elapsed_ms = (time.monotonic() - start) * 1000
-            _request_count += 1
-            stats = _endpoint_stats[key]
-            stats["count"] += 1
-            stats["total_ms"] += elapsed_ms
-
-            if status_code >= 400:
-                stats["errors"] += 1
-                _error_count += 1
+            if not is_internal_probe:
                 _recent_errors.append({
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "method": request.method,
                     "path": request.url.path,
-                    "status_code": status_code,
-                    "latency_ms": round(elapsed_ms, 2),
+                    "error_type": type(exc).__name__,
+                    "detail": str(exc)[:300],
+                    "status_code": 500,
                 })
+                _error_count += 1
+            raise
+        finally:
+            if not is_internal_probe:
+                elapsed_ms = (time.monotonic() - start) * 1000
+                _request_count += 1
+                stats = _endpoint_stats[key]
+                stats["count"] += 1
+                stats["total_ms"] += elapsed_ms
 
-            if elapsed_ms > _SLOW_THRESHOLD_MS:
-                _recent_slow.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "method": request.method,
-                    "path": request.url.path,
-                    "latency_ms": round(elapsed_ms, 2),
-                    "status_code": status_code,
-                })
+                if status_code >= 400:
+                    stats["errors"] += 1
+                    _error_count += 1
+                    _recent_errors.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": status_code,
+                        "latency_ms": round(elapsed_ms, 2),
+                    })
+
+                if elapsed_ms > _SLOW_THRESHOLD_MS:
+                    _recent_slow.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "latency_ms": round(elapsed_ms, 2),
+                        "status_code": status_code,
+                    })
 
 
 # ---------------------------------------------------------------------------

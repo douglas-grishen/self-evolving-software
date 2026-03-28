@@ -17,6 +17,11 @@ from engine.repo.scanner import extract_frontend_app_modules
 
 
 _CORE_API_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "core_api_contracts.yaml"
+RUNTIME_PROBE_HEADER_NAME = "X-SES-Probe"
+RUNTIME_PROBE_HEADER_VALUE = "runtime-contract"
+RUNTIME_PROBE_HEADERS = {
+    RUNTIME_PROBE_HEADER_NAME: RUNTIME_PROBE_HEADER_VALUE,
+}
 
 
 @dataclass(frozen=True)

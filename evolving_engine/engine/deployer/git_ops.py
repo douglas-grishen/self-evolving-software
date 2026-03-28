@@ -29,6 +29,7 @@ from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext
 from engine.models.evolution import DeploymentResult
 from engine.runtime_contracts import (
+    RUNTIME_PROBE_HEADERS,
     get_core_availability_probes,
     get_core_framework_probes,
     get_runtime_contract_probes,
@@ -460,6 +461,7 @@ class LocalDeployer:
                     response = await client.request(
                         probe.method,
                         url,
+                        headers=RUNTIME_PROBE_HEADERS,
                         json=probe.json_body,
                     )
                 except Exception as exc:

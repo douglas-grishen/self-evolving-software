@@ -220,6 +220,7 @@ async def test_runtime_contract_smoke_checks_pass_when_probes_match(tmp_path, mo
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("x-ses-probe") == "runtime-contract"
         if request.method == "GET" and request.url.path == "/api/v1/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.method == "GET" and request.url.path == "/api/v1/system/info":
@@ -296,6 +297,7 @@ async def test_runtime_contract_smoke_checks_fail_on_missing_or_wrong_method(tmp
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("x-ses-probe") == "runtime-contract"
         if request.method == "GET" and request.url.path == "/api/v1/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.method == "GET" and request.url.path == "/api/v1/system/info":
@@ -357,6 +359,7 @@ async def test_runtime_contract_smoke_checks_fail_on_shape_drift(tmp_path, monke
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("x-ses-probe") == "runtime-contract"
         if request.method == "GET" and request.url.path == "/api/v1/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.method == "GET" and request.url.path == "/api/v1/system/info":

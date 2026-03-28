@@ -85,6 +85,7 @@ async def test_observer_probes_core_framework_contracts_without_app_metadata():
     observer = RuntimeObserver(base_url="http://backend:8000")
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("x-ses-probe") == "runtime-contract"
         if request.method == "GET" and request.url.path == "/api/v1/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.method == "GET" and request.url.path == "/api/v1/system/info":

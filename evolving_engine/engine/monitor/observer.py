@@ -30,6 +30,7 @@ from engine.monitor.models import (
     RuntimeSnapshot,
 )
 from engine.runtime_contracts import (
+    RUNTIME_PROBE_HEADERS,
     get_core_framework_probes,
     get_runtime_contract_probes,
     validate_runtime_contract_response,
@@ -212,6 +213,7 @@ class RuntimeObserver:
                     response = await client.request(
                         probe.method,
                         probe.path,
+                        headers=RUNTIME_PROBE_HEADERS,
                         json=probe.json_body,
                     )
                     contract_error = validate_runtime_contract_response(probe, response)
