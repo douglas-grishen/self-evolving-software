@@ -2,6 +2,7 @@
 
 import re
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -51,4 +52,11 @@ async def system_info() -> dict:
     a deployment.
     """
     version = _get_version()
-    return {"deploy_version": _get_deploy_version(), "version": version}
+    return {
+        "ok": True,
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "backend",
+        "deploy_version": _get_deploy_version(),
+        "version": version,
+    }

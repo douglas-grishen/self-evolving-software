@@ -29,6 +29,7 @@ from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext
 from engine.models.evolution import DeploymentResult
 from engine.runtime_contracts import (
+    get_core_availability_probes,
     get_core_framework_probes,
     get_runtime_contract_probes,
     validate_runtime_contract_response,
@@ -38,7 +39,6 @@ logger = structlog.get_logger()
 
 _RESTART_HEALTH_TIMEOUT_SECONDS = 45.0
 _RESTART_HEALTH_POLL_SECONDS = 2.0
-_RESTART_HEALTH_PATHS = ("/health", "/api/v1/health", "/api/v1/system/info")
 _RUNTIME_ARTIFACT_PATHS = (
     ".engine-state/usage.json",
     ".instance-state/usage.json",
@@ -381,21 +381,23 @@ class LocalDeployer:
         base_url = self.config.monitor_url.rstrip("/")
         deadline = asyncio.get_running_loop().time() + _RESTART_HEALTH_TIMEOUT_SECONDS
         last_error = "no response yet"
+        probes = get_core_availability_probes()
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
             while asyncio.get_running_loop().time() < deadline:
-                for path in _RESTART_HEALTH_PATHS:
-                    url = f"{base_url}{path}"
+                for probe in probes:
+                    url = f"{base_url}{probe.path}"
                     try:
-                        resp = await client.get(url)
-                        if resp.status_code < 500:
+                        resp = await client.request(probe.method, url, json=probe.json_body)
+                        contract_error = validate_runtime_contract_response(probe, resp)
+                        if contract_error is None:
                             logger.info(
                                 "deploy.health_check_ok",
                                 url=url,
                                 status_code=resp.status_code,
                             )
                             return True, f"{url} -> {resp.status_code}"
-                        last_error = f"{url} -> HTTP {resp.status_code}"
+                        last_error = f"{url} -> {contract_error}"
                     except Exception as exc:
                         last_error = f"{url} -> {exc}"
 

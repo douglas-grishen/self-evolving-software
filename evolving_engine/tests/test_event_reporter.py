@@ -2,8 +2,10 @@
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
+import engine.event_reporter as event_reporter_module
 from engine.event_reporter import EventReporter
 from engine.models.memory import EngineMemory
 
@@ -93,3 +95,35 @@ async def test_remember_lesson_creates_when_no_match(monkeypatch):
     )
 
     assert lesson_id == "lesson-2"
+
+
+@pytest.mark.asyncio
+async def test_is_backend_available_uses_canonical_health_contract(monkeypatch):
+    """Backend availability should require the canonical contract, not any non-500 response."""
+    reporter = EventReporter("http://backend:8000")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/health":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        if request.url.path == "/api/v1/system/info":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "ok",
+                    "timestamp": "2026-03-28T00:00:00Z",
+                    "service": "backend",
+                },
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(event_reporter_module.httpx, "AsyncClient", client_factory)
+
+    assert await reporter.is_backend_available() is True

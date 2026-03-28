@@ -25,6 +25,10 @@ from engine.models.backlog import BacklogItem, BacklogPlanItem
 from engine.models.inception import InceptionRequest, InceptionResult, InceptionSource
 from engine.models.memory import EngineMemory
 from engine.models.purpose import Purpose
+from engine.runtime_contracts import (
+    get_core_availability_probes,
+    validate_runtime_contract_response,
+)
 
 logger = structlog.get_logger()
 
@@ -292,11 +296,15 @@ class EventReporter:
 
     async def is_backend_available(self) -> bool:
         """Check whether the backend control-plane is currently reachable."""
-        for path in ("/health", "/api/v1/health", "/api/v1/system/info"):
+        for probe in get_core_availability_probes():
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-                    resp = await client.get(f"{self.base_url}{path}")
-                    if resp.status_code < 500:
+                    resp = await client.request(
+                        probe.method,
+                        f"{self.base_url}{probe.path}",
+                        json=probe.json_body,
+                    )
+                    if validate_runtime_contract_response(probe, resp) is None:
                         return True
             except Exception:
                 continue

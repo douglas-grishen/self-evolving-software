@@ -16,6 +16,9 @@ import yaml
 from engine.repo.scanner import extract_frontend_app_modules
 
 
+_CORE_API_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "core_api_contracts.yaml"
+
+
 @dataclass(frozen=True)
 class RuntimeContractProbe:
     """One HTTP request that must succeed for a mounted app contract."""
@@ -26,6 +29,7 @@ class RuntimeContractProbe:
     description: str
     expected_statuses: tuple[int, ...] = (200,)
     json_body: dict[str, Any] | None = None
+    response_shape: str = "any"
     required_json_fields: tuple[str, ...] = ()
     required_list_fields: tuple[str, ...] = ()
 
@@ -41,15 +45,50 @@ class PlatformFileContract:
     description: str
 
 
-def get_core_framework_probes() -> tuple[RuntimeContractProbe, ...]:
-    """Return framework-level routes that must remain mounted on every instance."""
+def _default_core_framework_probes() -> tuple[RuntimeContractProbe, ...]:
+    """Fallback core contract when the shared manifest cannot be loaded."""
     return (
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/health",
+            description="Health route must stay mounted",
+            expected_statuses=(200,),
+            response_shape="object",
+            required_json_fields=("status",),
+        ),
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/system/info",
+            description="System info route must stay mounted",
+            expected_statuses=(200,),
+            response_shape="object",
+            required_json_fields=("ok", "status", "timestamp", "service"),
+        ),
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/evolution/status",
+            description="Evolution dashboard status route must stay mounted",
+            expected_statuses=(200,),
+            response_shape="object",
+            required_json_fields=(
+                "total_evolutions",
+                "active_evolutions",
+                "completed_evolutions",
+                "failed_evolutions",
+                "current_purpose_version",
+                "pending_inceptions",
+            ),
+        ),
         RuntimeContractProbe(
             app_key="framework",
             method="GET",
             path="/api/v1/apps",
             description="Apps registry route must stay mounted",
             expected_statuses=(200,),
+            response_shape="list",
         ),
         RuntimeContractProbe(
             app_key="framework",
@@ -72,10 +111,89 @@ def get_core_framework_probes() -> tuple[RuntimeContractProbe, ...]:
             method="POST",
             path="/api/v1/chat",
             description="Chat route must remain mounted",
-            expected_statuses=(200, 422),
+            expected_statuses=(200, 400, 422),
             json_body={},
         ),
     )
+
+
+def _default_core_availability_probes() -> tuple[RuntimeContractProbe, ...]:
+    """Fallback availability probes when the shared manifest cannot be loaded."""
+    return (
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/health",
+            description="Canonical health endpoint",
+            expected_statuses=(200,),
+            response_shape="object",
+            required_json_fields=("status",),
+        ),
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/system/info",
+            description="System info endpoint",
+            expected_statuses=(200,),
+            response_shape="object",
+            required_json_fields=("ok", "status", "timestamp", "service"),
+        ),
+    )
+
+
+def _load_core_contract_manifest() -> dict[str, Any]:
+    """Load the shared core API contract manifest from the repo root."""
+    if not _CORE_API_CONTRACT_PATH.exists():
+        return {}
+
+    data = yaml.safe_load(_CORE_API_CONTRACT_PATH.read_text()) or {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _probe_from_mapping(app_key: str, probe_data: dict[str, Any]) -> RuntimeContractProbe:
+    """Build a runtime probe from a YAML mapping."""
+    return RuntimeContractProbe(
+        app_key=app_key,
+        method=str(probe_data["method"]).upper(),
+        path=str(probe_data["path"]),
+        description=str(probe_data.get("description", f"{app_key} runtime contract")),
+        expected_statuses=tuple(
+            int(status) for status in probe_data.get("expected_statuses", [200])
+        ),
+        json_body=probe_data.get("json_body"),
+        response_shape=str(probe_data.get("response_shape", "any")),
+        required_json_fields=tuple(
+            str(field) for field in probe_data.get("required_json_fields", [])
+        ),
+        required_list_fields=tuple(
+            str(field) for field in probe_data.get("required_list_fields", [])
+        ),
+    )
+
+
+def _load_core_probe_group(group: str) -> tuple[RuntimeContractProbe, ...]:
+    """Load one named core probe group from the shared manifest."""
+    manifest = _load_core_contract_manifest()
+    entries = manifest.get(group, [])
+    if not isinstance(entries, list):
+        return ()
+    return tuple(
+        _probe_from_mapping("framework", entry)
+        for entry in entries
+        if isinstance(entry, dict)
+    )
+
+
+def get_core_framework_probes() -> tuple[RuntimeContractProbe, ...]:
+    """Return framework-level routes that must remain mounted on every instance."""
+    return _load_core_probe_group("core_probes") or _default_core_framework_probes()
+
+
+def get_core_availability_probes() -> tuple[RuntimeContractProbe, ...]:
+    """Return the canonical probes used to decide whether the backend is alive."""
+    return _load_core_probe_group("availability_probes") or _default_core_availability_probes()
 
 
 def _load_contract_apps(contracts_path: Path | None) -> dict[str, Any]:
@@ -100,32 +218,9 @@ def _load_runtime_contracts(
     for app_key, app_data in apps.items():
         probes: list[RuntimeContractProbe] = []
         for probe_data in app_data.get("probes", []):
-            probes.append(
-                RuntimeContractProbe(
-                    app_key=str(app_key),
-                    method=str(probe_data["method"]).upper(),
-                    path=str(probe_data["path"]),
-                    description=str(
-                        probe_data.get(
-                            "description",
-                            f"{app_key} runtime contract",
-                        )
-                    ),
-                    expected_statuses=tuple(
-                        int(status)
-                        for status in probe_data.get("expected_statuses", [200])
-                    ),
-                    json_body=probe_data.get("json_body"),
-                    required_json_fields=tuple(
-                        str(field)
-                        for field in probe_data.get("required_json_fields", [])
-                    ),
-                    required_list_fields=tuple(
-                        str(field)
-                        for field in probe_data.get("required_list_fields", [])
-                    ),
-                )
-            )
+            if not isinstance(probe_data, dict):
+                continue
+            probes.append(_probe_from_mapping(str(app_key), probe_data))
         contracts[str(app_key)] = tuple(probes)
 
     return contracts
@@ -206,7 +301,11 @@ def validate_runtime_contract_response(
     if response.status_code not in probe.expected_statuses:
         return f"HTTP {response.status_code}"
 
-    if not probe.required_json_fields and not probe.required_list_fields:
+    if (
+        probe.response_shape == "any"
+        and not probe.required_json_fields
+        and not probe.required_list_fields
+    ):
         return None
 
     try:
@@ -214,6 +313,13 @@ def validate_runtime_contract_response(
     except ValueError as exc:
         return f"invalid JSON body: {exc}"
 
+    if probe.response_shape == "list":
+        if not isinstance(payload, list):
+            return f"JSON body is not a list: {type(payload).__name__}"
+        return None
+
+    if probe.response_shape == "object" and not isinstance(payload, dict):
+        return f"JSON body is not an object: {type(payload).__name__}"
     if not isinstance(payload, dict):
         return f"JSON body is not an object: {type(payload).__name__}"
 

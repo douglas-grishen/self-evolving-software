@@ -166,6 +166,31 @@ async def test_runtime_contract_smoke_checks_pass_when_probes_match(tmp_path, mo
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "GET" and request.url.path == "/api/v1/system/info":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "ok",
+                    "timestamp": "2026-03-28T00:00:00Z",
+                    "service": "backend",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/api/v1/evolution/status":
+            return httpx.Response(
+                200,
+                json={
+                    "total_evolutions": 0,
+                    "active_evolutions": 0,
+                    "completed_evolutions": 0,
+                    "failed_evolutions": 0,
+                    "current_purpose_version": 4,
+                    "pending_inceptions": 0,
+                    "last_evolution": None,
+                },
+            )
         if request.method == "GET" and request.url.path == "/api/v1/apps":
             return httpx.Response(200, json=[])
         if request.method == "POST" and request.url.path == "/api/v1/apps":
@@ -201,7 +226,7 @@ async def test_runtime_contract_smoke_checks_pass_when_probes_match(tmp_path, mo
     ok, message = await deployer._run_runtime_contract_smoke_checks()
 
     assert ok is True
-    assert "Validated 6 runtime contract probes" in message
+    assert "Validated 9 runtime contract probes" in message
 
 
 @pytest.mark.asyncio
@@ -217,6 +242,31 @@ async def test_runtime_contract_smoke_checks_fail_on_missing_or_wrong_method(tmp
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "GET" and request.url.path == "/api/v1/system/info":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "ok",
+                    "timestamp": "2026-03-28T00:00:00Z",
+                    "service": "backend",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/api/v1/evolution/status":
+            return httpx.Response(
+                200,
+                json={
+                    "total_evolutions": 0,
+                    "active_evolutions": 0,
+                    "completed_evolutions": 0,
+                    "failed_evolutions": 0,
+                    "current_purpose_version": 4,
+                    "pending_inceptions": 0,
+                    "last_evolution": None,
+                },
+            )
         if request.url.path == "/api/v1/apps":
             return httpx.Response(404, json={"detail": "Not Found"})
         if request.url.path == "/api/v1/apps/capabilities":
@@ -253,6 +303,31 @@ async def test_runtime_contract_smoke_checks_fail_on_shape_drift(tmp_path, monke
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "GET" and request.url.path == "/api/v1/system/info":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "ok",
+                    "timestamp": "2026-03-28T00:00:00Z",
+                    "service": "backend",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/api/v1/evolution/status":
+            return httpx.Response(
+                200,
+                json={
+                    "total_evolutions": 0,
+                    "active_evolutions": 0,
+                    "completed_evolutions": 0,
+                    "failed_evolutions": 0,
+                    "current_purpose_version": 4,
+                    "pending_inceptions": 0,
+                    "last_evolution": None,
+                },
+            )
         if request.method == "GET" and request.url.path == "/api/v1/apps":
             return httpx.Response(200, json=[])
         if request.method == "POST" and request.url.path == "/api/v1/apps":

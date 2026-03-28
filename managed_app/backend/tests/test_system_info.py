@@ -29,4 +29,11 @@ async def test_system_info_returns_zero_when_deploy_version_file_is_invalid(
     monkeypatch.setattr(system_api, "_DEPLOY_VERSION_FILE", version_file)
     monkeypatch.setattr(system_api, "_BACKEND_ROOT", tmp_path)
 
-    assert await system_api.system_info() == {"deploy_version": 0, "version": "9.9.9"}
+    response = await system_api.system_info()
+
+    assert response["ok"] is True
+    assert response["status"] == "ok"
+    assert response["service"] == "backend"
+    assert "timestamp" in response
+    assert response["deploy_version"] == 0
+    assert response["version"] == "9.9.9"

@@ -1,0 +1,59 @@
+availability_probes:
+  - method: GET
+    path: /api/v1/health
+    description: Canonical health endpoint
+    expected_statuses: [200]
+    response_shape: object
+    required_json_fields: [status]
+  - method: GET
+    path: /api/v1/system/info
+    description: System info endpoint
+    expected_statuses: [200]
+    response_shape: object
+    required_json_fields: [ok, status, timestamp, service]
+
+core_probes:
+  - method: GET
+    path: /api/v1/health
+    description: Health route must stay mounted
+    expected_statuses: [200]
+    response_shape: object
+    required_json_fields: [status]
+  - method: GET
+    path: /api/v1/system/info
+    description: System info route must stay mounted
+    expected_statuses: [200]
+    response_shape: object
+    required_json_fields: [ok, status, timestamp, service]
+  - method: GET
+    path: /api/v1/evolution/status
+    description: Evolution dashboard status route must stay mounted
+    expected_statuses: [200]
+    response_shape: object
+    required_json_fields:
+      - total_evolutions
+      - active_evolutions
+      - completed_evolutions
+      - failed_evolutions
+      - current_purpose_version
+      - pending_inceptions
+  - method: GET
+    path: /api/v1/apps
+    description: Apps registry route must stay mounted
+    expected_statuses: [200]
+    response_shape: list
+  - method: POST
+    path: /api/v1/apps
+    description: Apps creation route must remain available
+    expected_statuses: [201, 400, 409, 422]
+    json_body: {}
+  - method: POST
+    path: /api/v1/apps/capabilities
+    description: Capabilities creation route must remain available
+    expected_statuses: [201, 400, 409, 422]
+    json_body: {}
+  - method: POST
+    path: /api/v1/chat
+    description: Chat route must remain mounted
+    expected_statuses: [200, 400, 422]
+    json_body: {}

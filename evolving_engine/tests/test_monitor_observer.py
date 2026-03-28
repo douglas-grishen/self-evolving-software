@@ -85,6 +85,31 @@ async def test_observer_probes_core_framework_contracts_without_app_metadata():
     observer = RuntimeObserver(base_url="http://backend:8000")
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "GET" and request.url.path == "/api/v1/system/info":
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "status": "ok",
+                    "timestamp": "2026-03-28T00:00:00Z",
+                    "service": "backend",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/api/v1/evolution/status":
+            return httpx.Response(
+                200,
+                json={
+                    "total_evolutions": 0,
+                    "active_evolutions": 0,
+                    "completed_evolutions": 0,
+                    "failed_evolutions": 0,
+                    "current_purpose_version": 4,
+                    "pending_inceptions": 0,
+                    "last_evolution": None,
+                },
+            )
         if request.method == "GET" and request.url.path == "/api/v1/apps":
             return httpx.Response(200, json=[])
         if request.method == "POST" and request.url.path == "/api/v1/apps":
