@@ -135,8 +135,9 @@ services:
       ENGINE_USAGE_STATE_PATH: /opt/evolved-app/.engine-state/usage.json
       ENGINE_REPO_ROOT: /workspace
       ENGINE_GENESIS_PATH: /workspace/genesis.yaml
-      ENGINE_PURPOSE_PATH: /workspace/purpose.yaml
-      ENGINE_PURPOSE_HISTORY_PATH: /workspace/purpose_history
+      ENGINE_PURPOSE_PATH: /opt/evolved-app/.engine-state/purpose.yaml
+      ENGINE_PURPOSE_HISTORY_PATH: /opt/evolved-app/.engine-state/purpose_history
+      ENGINE_PURPOSE_SEED_PATH: /workspace/purpose.yaml
       # --- Local deploy (never pushes to GitHub) ---
       ENGINE_EVOLVED_APP_PATH: /opt/evolved-app
       ENGINE_DEPLOY_ROOT: /workspace
