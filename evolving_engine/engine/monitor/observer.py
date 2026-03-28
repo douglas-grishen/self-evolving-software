@@ -1,6 +1,6 @@
 """RuntimeObserver — the engine's sensor layer.
 
-Polls the Managed System via the control-plane network at a configurable
+Polls the Operational Plane via the control-plane network at a configurable
 interval and produces RuntimeSnapshot objects that feed the MAPE-K loop.
 
 Also reads Docker container states directly from the Docker socket so the
@@ -16,19 +16,27 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 
 from engine.monitor.models import (
     Anomaly,
     AnomalyType,
+    ContractProbeFailure,
     DatabaseSchema,
     EndpointMetrics,
     HealthCheck,
     RuntimeSnapshot,
 )
+from engine.runtime_contracts import (
+    get_core_framework_probes,
+    get_runtime_contract_probes,
+    validate_runtime_contract_response,
+)
 
 logger = logging.getLogger(__name__)
+_OPERATIONAL_SUBSYSTEM_LABELS = {"operational-plane", "managed-system"}
 
 # ---------------------------------------------------------------------------
 # Anomaly detection thresholds (defaults — override via EngineSettings)
@@ -39,7 +47,7 @@ DEFAULT_DB_LATENCY_THRESHOLD_MS = 200.0
 
 
 class RuntimeObserver:
-    """Polls the Managed System and converts raw data into RuntimeSnapshot.
+    """Polls the Operational Plane and converts raw data into RuntimeSnapshot.
 
     Usage:
         observer = RuntimeObserver(base_url="http://backend:8000")
@@ -51,12 +59,17 @@ class RuntimeObserver:
     def __init__(
         self,
         base_url: str,
+        operational_plane_path: Path | None = None,
+        managed_app_path: Path | None = None,
+        runtime_contracts_path: Path | None = None,
         timeout_seconds: float = 10.0,
         error_rate_threshold: float = DEFAULT_ERROR_RATE_THRESHOLD,
         latency_threshold_ms: float = DEFAULT_LATENCY_THRESHOLD_MS,
         db_latency_threshold_ms: float = DEFAULT_DB_LATENCY_THRESHOLD_MS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._operational_plane_path = operational_plane_path or managed_app_path
+        self._runtime_contracts_path = runtime_contracts_path
         self._timeout = timeout_seconds
         self._error_rate_threshold = error_rate_threshold
         self._latency_threshold_ms = latency_threshold_ms
@@ -76,11 +89,12 @@ class RuntimeObserver:
                 base_url=self._base_url, timeout=self._timeout
             ) as client:
                 # Run all probes concurrently
-                health, metrics, errors, schema = await asyncio.gather(
+                health, metrics, errors, schema, contract_failures = await asyncio.gather(
                     self._probe_health(client),
                     self._probe_metrics(client),
                     self._probe_errors(client),
                     self._probe_schema(client),
+                    self._probe_runtime_contracts(client),
                     return_exceptions=True,
                 )
 
@@ -100,6 +114,8 @@ class RuntimeObserver:
                 snapshot.recent_errors = errors
             if isinstance(schema, DatabaseSchema):
                 snapshot.schema = schema
+            if isinstance(contract_failures, list):
+                snapshot.contract_failures = contract_failures
 
             # Try to read Docker container states (best-effort)
             snapshot.container_states = await self._probe_docker_states()
@@ -110,12 +126,12 @@ class RuntimeObserver:
                 Anomaly(
                     type=AnomalyType.SERVICE_UNREACHABLE,
                     severity="critical",
-                    description=f"Cannot reach Managed System at {self._base_url}",
+                    description=f"Cannot reach Operational Plane at {self._base_url}",
                     evidence={"error": str(exc)},
                     suggested_action="Check that the backend container is running and healthy.",
                 )
             )
-            logger.error("Managed System unreachable: %s", exc)
+            logger.error("Operational Plane unreachable: %s", exc)
             return snapshot
 
         # Run anomaly detection on the collected data
@@ -177,8 +193,59 @@ class RuntimeObserver:
             logger.warning("Schema probe failed: %s", exc)
             return exc
 
+    async def _probe_runtime_contracts(
+        self, client: httpx.AsyncClient
+    ) -> list[ContractProbeFailure] | Exception:
+        """Actively probe framework and mounted-app contracts outside aggregate error thresholds."""
+        try:
+            probes = list(get_core_framework_probes())
+            if self._operational_plane_path is not None:
+                probes.extend(
+                    get_runtime_contract_probes(
+                        self._operational_plane_path,
+                        self._runtime_contracts_path,
+                    )
+                )
+            failures: list[ContractProbeFailure] = []
+            for probe in probes:
+                try:
+                    response = await client.request(
+                        probe.method,
+                        probe.path,
+                        json=probe.json_body,
+                    )
+                    contract_error = validate_runtime_contract_response(probe, response)
+                    if contract_error is None:
+                        continue
+                    failures.append(
+                        ContractProbeFailure(
+                            app_key=probe.app_key,
+                            method=probe.method,
+                            path=probe.path,
+                            description=probe.description,
+                            expected_statuses=list(probe.expected_statuses),
+                            status_code=response.status_code,
+                            detail=contract_error,
+                        )
+                    )
+                except Exception as exc:
+                    failures.append(
+                        ContractProbeFailure(
+                            app_key=probe.app_key,
+                            method=probe.method,
+                            path=probe.path,
+                            description=probe.description,
+                            expected_statuses=list(probe.expected_statuses),
+                            detail=str(exc),
+                        )
+                    )
+            return failures
+        except Exception as exc:
+            logger.warning("Runtime contract probe failed: %s", exc)
+            return exc
+
     async def _probe_docker_states(self) -> dict[str, str]:
-        """Read managed-system container states via Docker socket (best-effort)."""
+        """Read Operational Plane container states via Docker socket (best-effort)."""
         try:
             import docker  # type: ignore
 
@@ -186,7 +253,7 @@ class RuntimeObserver:
             states: dict[str, str] = {}
             for container in client.containers.list(all=True):
                 labels = container.labels or {}
-                if labels.get("com.ses.subsystem") == "managed-system":
+                if labels.get("com.ses.subsystem") in _OPERATIONAL_SUBSYSTEM_LABELS:
                     states[container.name] = container.status
             return states
         except Exception:
@@ -205,7 +272,7 @@ class RuntimeObserver:
                 Anomaly(
                     type=AnomalyType.DATABASE_DEGRADED,
                     severity="high",
-                    description="Managed System reports degraded health status.",
+                    description="Operational Plane reports degraded health status.",
                     evidence={"checks": snapshot.health.checks},
                     suggested_action="Inspect database connectivity and migration state.",
                 )
@@ -231,6 +298,29 @@ class RuntimeObserver:
             )
 
         # 3. Global error rate
+        for failure in snapshot.contract_failures:
+            status = (
+                f"HTTP {failure.status_code}"
+                if failure.status_code is not None
+                else failure.detail
+            )
+            snapshot.anomalies.append(
+                Anomaly(
+                    type=AnomalyType.MISSING_ENDPOINT,
+                    severity="high",
+                    description=(
+                        f"Runtime contract probe failed for {failure.method} "
+                        f"{failure.path}: {status}"
+                    ),
+                    evidence=failure.model_dump(),
+                    suggested_action=(
+                        "Restore the expected backend contract so the desktop can "
+                        "recover with a valid empty state instead of a broken request."
+                    ),
+                )
+            )
+
+        # 4. Global error rate
         if (
             snapshot.total_requests > 10
             and snapshot.global_error_rate > self._error_rate_threshold
@@ -255,7 +345,7 @@ class RuntimeObserver:
                 )
             )
 
-        # 4. Per-endpoint latency
+        # 5. Per-endpoint latency
         for ep in snapshot.endpoints:
             if (
                 ep.request_count >= 5
@@ -282,7 +372,7 @@ class RuntimeObserver:
                     )
                 )
 
-        # 5. Crashed containers
+        # 6. Crashed containers
         for name, status in snapshot.container_states.items():
             if status in ("exited", "dead"):
                 snapshot.anomalies.append(
@@ -295,7 +385,7 @@ class RuntimeObserver:
                     )
                 )
 
-        # 6. Schema drift (new tables appeared since last observation)
+        # 7. Schema drift (new tables appeared since last observation)
         if self._previous_schema and snapshot.schema:
             prev_tables = {t["name"] for t in self._previous_schema.tables}
             curr_tables = {t["name"] for t in snapshot.schema.tables}

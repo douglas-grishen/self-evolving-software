@@ -1,8 +1,11 @@
 """Tests for chat provider fallback behavior."""
 
+from httpx import ASGITransport, AsyncClient
 import pytest
 
 from app.api.v1 import chat as chat_api
+from app.database import get_db
+from app.main import app
 
 
 async def _collect_chunks(generator):
@@ -21,7 +24,7 @@ async def test_stream_chat_response_falls_back_to_bedrock(monkeypatch):
         yield  # pragma: no cover - keeps async-generator shape
 
     async def fake_bedrock(*args, **kwargs):
-        yield chat_api._sse_text("Competitive Intelligence exists.")
+        yield chat_api._sse_text("Example App exists.")
         yield chat_api._sse_done()
 
     monkeypatch.setattr(chat_api, "_stream_anthropic", fake_anthropic)
@@ -39,7 +42,7 @@ async def test_stream_chat_response_falls_back_to_bedrock(monkeypatch):
     )
 
     assert chunks == [
-        'data: {"text": "Competitive Intelligence exists."}\n\n',
+        'data: {"text": "Example App exists."}\n\n',
         "data: [DONE]\n\n",
     ]
 
@@ -137,12 +140,12 @@ async def test_stream_chat_response_uses_local_fallback_when_providers_fail(monk
             model="claude-sonnet-4-20250514",
             anthropic_api_key="test-key",
             openai_api_key="",
-            local_fallback_text="Live apps:\n- Competitive Intelligence",
+            local_fallback_text="Live apps:\n- Example App",
         )
     )
 
     assert chunks == [
-        'data: {"text": "Live apps:\\n- Competitive Intelligence"}\n\n',
+        'data: {"text": "Live apps:\\n- Example App"}\n\n',
         "data: [DONE]\n\n",
     ]
 
@@ -182,3 +185,46 @@ async def test_stream_chat_response_prefers_openai_when_selected(monkeypatch):
         'data: {"text": "OpenAI reply"}\n\n',
         "data: [DONE]\n\n",
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_runtime_settings_reads_key_value_rows():
+    """Chat settings should not require hydrating full ORM rows."""
+
+    class _Result:
+        def all(self):
+            return [
+                ("chat_llm_provider", "openai"),
+                ("chat_llm_model", "gpt-5.2"),
+                ("openai_api_key", "openai-key"),
+            ]
+
+    class _DB:
+        async def execute(self, _statement):
+            return _Result()
+
+    runtime = await chat_api._get_runtime_settings(_DB())
+
+    assert runtime == {
+        "llm_provider": "openai",
+        "llm_model": "gpt-5.2",
+        "anthropic_api_key": "",
+        "openai_api_key": "openai-key",
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_route_is_mounted():
+    """The API should expose the chat route even before provider calls succeed."""
+    async def override_db():
+        yield None
+
+    app.dependency_overrides[get_db] = override_db
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/v1/chat", json={})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 422

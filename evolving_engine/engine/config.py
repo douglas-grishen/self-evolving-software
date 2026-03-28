@@ -30,6 +30,9 @@ class EngineSettings(BaseSettings):
     # Purpose history — archived versions after Inception modifications
     purpose_history_path: Path = Path("../purpose_history")
 
+    # Runtime contract probes for mounted desktop apps
+    runtime_contracts_path: Path | None = None
+
     # Scratch space for staging generated files before validation
     workspace_path: Path = Path("/tmp/evolving_engine_workspace")
 
@@ -123,6 +126,11 @@ class EngineSettings(BaseSettings):
     log_level: str = "INFO"
 
     model_config = {"env_prefix": "ENGINE_", "env_file": ".env", "extra": "ignore"}
+
+    @property
+    def operational_plane_path(self) -> Path:
+        """Backward-compatible alias for code migrating away from managed_app naming."""
+        return self.managed_app_path
 
 
 settings = EngineSettings()
