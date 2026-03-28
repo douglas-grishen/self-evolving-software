@@ -15,15 +15,24 @@ docker compose -f docker-compose.prod.yml up -d
 
 # Wait for backend health check (up to 120s for first-time postgres init)
 echo "Waiting for backend health check..."
+HEALTH_URLS=(
+    "http://localhost/api/v1/health"
+    "http://localhost/health"
+)
+
 for i in $(seq 1 60); do
-    if curl -sf http://localhost/health > /dev/null 2>&1; then
-        echo "Backend is healthy!"
-        exit 0
-    fi
+    for url in "${HEALTH_URLS[@]}"; do
+        if curl -sf "$url" > /dev/null 2>&1; then
+            echo "Backend is healthy via $url"
+            exit 0
+        fi
+    done
     sleep 2
 done
 
 echo "WARNING: Backend health check did not pass within 120 seconds."
+echo "Checked URLs:"
+printf ' - %s\n' "${HEALTH_URLS[@]}"
 echo "=== Container status ==="
 docker compose -f docker-compose.prod.yml ps
 echo "=== Backend logs ==="
