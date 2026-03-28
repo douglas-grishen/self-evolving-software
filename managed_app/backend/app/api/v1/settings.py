@@ -2,7 +2,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -24,26 +24,46 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 @router.get("", response_model=List[SettingResponse])
 async def list_settings(db: AsyncSession = Depends(get_db)) -> list:
     """List all system settings."""
-    result = await db.execute(select(SystemSetting).order_by(SystemSetting.key))
-    settings = list(result.scalars().all())
+    result = await db.execute(
+        select(
+            SystemSetting.key,
+            SystemSetting.value,
+            SystemSetting.description,
+            SystemSetting.updated_at,
+        ).order_by(SystemSetting.key)
+    )
+    settings = result.all()
     return [
         SettingResponse(
-            key=setting.key,
-            value=mask_setting_value(setting.key, setting.value),
-            description=setting.description,
-            updated_at=setting.updated_at,
+            key=key,
+            value=mask_setting_value(key, value or ""),
+            description=description,
+            updated_at=updated_at,
         )
-        for setting in settings
+        for key, value, description, updated_at in settings
     ]
 
 
 @router.get("/{key}", response_model=SettingResponse)
-async def get_setting(key: str, db: AsyncSession = Depends(get_db)) -> SystemSetting:
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
-    setting = result.scalar_one_or_none()
+async def get_setting(key: str, db: AsyncSession = Depends(get_db)) -> SettingResponse:
+    result = await db.execute(
+        select(
+            SystemSetting.key,
+            SystemSetting.value,
+            SystemSetting.description,
+            SystemSetting.updated_at,
+        ).where(SystemSetting.key == key)
+    )
+    setting = result.one_or_none()
     if not setting:
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
-    return setting
+    setting_key, value, description, updated_at = setting
+    return SettingResponse(
+        key=setting_key,
+        value=value or "",
+        description=description,
+        updated_at=updated_at,
+    )
 
 
 @router.put("/{key}", response_model=SettingResponse)
@@ -56,9 +76,9 @@ async def update_setting(
     if key not in EDITABLE_SETTING_KEYS:
         raise HTTPException(status_code=403, detail=f"Setting '{key}' is not editable via API")
 
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
-    setting = result.scalar_one_or_none()
-    if not setting:
+    result = await db.execute(select(SystemSetting.key).where(SystemSetting.key == key))
+    setting_key = result.scalar_one_or_none()
+    if not setting_key:
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
 
     # Validate proactive interval
@@ -92,12 +112,23 @@ async def update_setting(
     elif key in SECRET_SETTING_KEYS:
         payload.value = payload.value.strip()
 
-    setting.value = payload.value
-    await db.flush()
-    await db.refresh(setting)
+    await db.execute(
+        update(SystemSetting)
+        .where(SystemSetting.key == key)
+        .values(value=payload.value, updated_at=func.now())
+    )
+    result = await db.execute(
+        select(
+            SystemSetting.key,
+            SystemSetting.value,
+            SystemSetting.description,
+            SystemSetting.updated_at,
+        ).where(SystemSetting.key == key)
+    )
+    setting_key, value, description, updated_at = result.one()
     return SettingResponse(
-        key=setting.key,
-        value=mask_setting_value(setting.key, setting.value),
-        description=setting.description,
-        updated_at=setting.updated_at,
+        key=setting_key,
+        value=mask_setting_value(setting_key, value or ""),
+        description=description,
+        updated_at=updated_at,
     )
