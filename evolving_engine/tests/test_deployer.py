@@ -186,6 +186,27 @@ def test_sync_framework_core_files_restores_protected_backend_routes(tmp_path):
     assert evolved_file.read_text(encoding="utf-8") == "router = 'framework'\n"
 
 
+def test_protected_framework_manifest_covers_runtime_support_modules():
+    """Critical backend support modules must stay protected alongside the routers."""
+    manifest = (
+        Path(__file__).resolve().parents[2] / "protected_framework_files.txt"
+    ).read_text(encoding="utf-8")
+    entries = {line.strip() for line in manifest.splitlines() if line.strip()}
+
+    assert {
+        "backend/app/main.py",
+        "backend/app/auth.py",
+        "backend/app/system_settings.py",
+        "backend/app/api/v1/auth.py",
+        "backend/app/api/v1/apps.py",
+        "backend/app/api/v1/settings.py",
+        "backend/app/models/apps.py",
+        "backend/app/models/system_settings.py",
+        "backend/app/schemas/apps.py",
+        "backend/app/schemas/system_settings.py",
+    }.issubset(entries)
+
+
 @pytest.mark.asyncio
 async def test_runtime_contract_smoke_checks_pass_when_probes_match(tmp_path, monkeypatch):
     """Deploy smoke checks should accept healthy mounted app contracts."""

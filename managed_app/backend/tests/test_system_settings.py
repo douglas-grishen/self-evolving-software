@@ -1,6 +1,13 @@
 """Tests for runtime settings resolution and engine budgets."""
 
-from app.system_settings import build_default_system_settings, resolve_runtime_model, resolve_runtime_provider
+import pytest
+
+from app.system_settings import (
+    build_default_system_settings,
+    ensure_default_system_settings,
+    resolve_runtime_model,
+    resolve_runtime_provider,
+)
 
 
 def test_resolve_runtime_provider_prefers_scope_specific_value():
@@ -37,3 +44,74 @@ def test_default_settings_include_engine_budget_keys():
         "engine_daily_usage_snapshot",
     ):
         assert key in defaults
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_system_settings_projects_only_live_columns():
+    """Startup repair should avoid selecting or writing columns missing in the live table."""
+    executed = []
+
+    class _Row:
+        def __init__(self, mapping):
+            self._mapping = mapping
+
+    class _Result:
+        def all(self):
+            return [_Row({"key": "llm_provider", "value": "openai"})]
+
+    class _Connection:
+        async def run_sync(self, fn):
+            return {"id", "key", "value"}
+
+    class _DB:
+        committed = False
+
+        async def connection(self):
+            return _Connection()
+
+        async def execute(self, statement):
+            executed.append(statement)
+            if len(executed) == 1:
+                return _Result()
+            return object()
+
+        async def commit(self):
+            self.committed = True
+
+    db = _DB()
+    await ensure_default_system_settings(db)
+
+    assert [column.key for column in executed[0].selected_columns] == ["key", "value"]
+    insert_statements = [statement for statement in executed[1:] if statement.__class__.__name__ == "Insert"]
+    assert insert_statements
+    assert all("description" not in statement.compile().params for statement in insert_statements)
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_system_settings_skips_when_table_missing():
+    """Startup should not crash the whole backend when an old instance lacks the table."""
+
+    class _Connection:
+        async def run_sync(self, fn):
+            return set()
+
+    class _DB:
+        committed = False
+        executed = False
+
+        async def connection(self):
+            return _Connection()
+
+        async def execute(self, statement):  # pragma: no cover - regression guard
+            self.executed = True
+            return object()
+
+        async def commit(self):
+            self.committed = True
+
+    db = _DB()
+    await ensure_default_system_settings(db)
+
+    assert db.executed is False
+    assert db.committed is False

@@ -1,4 +1,6 @@
 backend/app/main.py
+backend/app/auth.py
+backend/app/system_settings.py
 backend/app/api/v1/__init__.py
 backend/app/api/v1/auth.py
 backend/app/api/v1/chat.py
@@ -8,3 +10,10 @@ backend/app/api/v1/evolution.py
 backend/app/api/v1/apps.py
 backend/app/api/v1/system.py
 backend/app/api/v1/settings.py
+backend/app/models/admin.py
+backend/app/models/apps.py
+backend/app/models/evolution.py
+backend/app/models/system_settings.py
+backend/app/schemas/apps.py
+backend/app/schemas/evolution.py
+backend/app/schemas/system_settings.py

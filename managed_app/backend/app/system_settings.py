@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import uuid
+from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import inspect, insert, select, update
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.system_settings import SystemSetting
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_LLM_PROVIDERS = {"anthropic", "bedrock", "openai"}
 SECRET_SETTING_KEYS = {"anthropic_api_key", "openai_api_key"}
@@ -193,12 +199,84 @@ def mask_setting_value(key: str, value: str) -> str:
     return "*" * max(0, len(value) - 4) + value[-4:]
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _get_system_setting_columns(db: AsyncSession) -> set[str]:
+    """Inspect live DB columns so startup can tolerate instance schema drift."""
+    connection = await db.connection()
+
+    def _inspect(sync_connection) -> set[str]:
+        try:
+            return {
+                column["name"]
+                for column in inspect(sync_connection).get_columns(SystemSetting.__tablename__)
+            }
+        except NoSuchTableError:
+            return set()
+
+    return await connection.run_sync(_inspect)
+
+
+async def _load_existing_system_settings(
+    db: AsyncSession,
+    *,
+    available_columns: set[str],
+) -> dict[str, dict[str, str | None]]:
+    """Load system settings using only live columns instead of full ORM hydration."""
+    selected_columns = [SystemSetting.key]
+    if "value" in available_columns:
+        selected_columns.append(SystemSetting.value)
+    if "description" in available_columns:
+        selected_columns.append(SystemSetting.description)
+
+    result = await db.execute(select(*selected_columns))
+    rows: dict[str, dict[str, str | None]] = {}
+    for row in result.all():
+        mapping = row._mapping
+        rows[mapping["key"]] = {
+            "value": mapping.get("value") or "",
+            "description": mapping.get("description"),
+        }
+    return rows
+
+
+def _build_system_setting_insert_values(
+    *,
+    available_columns: set[str],
+    key: str,
+    value: str,
+    description: str,
+) -> dict[str, object]:
+    values: dict[str, object] = {"key": key}
+    if "id" in available_columns:
+        values["id"] = str(uuid.uuid4())
+    if "value" in available_columns:
+        values["value"] = value
+    if "description" in available_columns:
+        values["description"] = description
+    if "updated_at" in available_columns:
+        values["updated_at"] = _utcnow()
+    return values
+
+
 async def ensure_default_system_settings(db: AsyncSession) -> None:
     """Backfill missing runtime settings for existing deployments."""
     defaults = build_default_system_settings()
-    result = await db.execute(select(SystemSetting))
-    existing = {setting.key: setting for setting in result.scalars().all()}
-    existing_values = {key: record.value for key, record in existing.items()}
+    available_columns = await _get_system_setting_columns(db)
+    if not available_columns:
+        logger.warning("system_settings.bootstrap_skipped: table_missing")
+        return
+    if "key" not in available_columns or "value" not in available_columns:
+        logger.warning(
+            "system_settings.bootstrap_skipped: required_columns_missing available_columns=%s",
+            sorted(available_columns),
+        )
+        return
+
+    existing = await _load_existing_system_settings(db, available_columns=available_columns)
+    existing_values = {key: (record.get("value") or "") for key, record in existing.items()}
 
     changed = False
     for key, (value, description) in defaults.items():
@@ -223,12 +301,28 @@ async def ensure_default_system_settings(db: AsyncSession) -> None:
                     )
                     value = default_model_for_provider(scoped_provider)
 
-            db.add(SystemSetting(key=key, value=value, description=description))
+            await db.execute(
+                insert(SystemSetting.__table__).values(
+                    **_build_system_setting_insert_values(
+                        available_columns=available_columns,
+                        key=key,
+                        value=value,
+                        description=description,
+                    )
+                )
+            )
             existing_values[key] = value
             changed = True
             continue
-        if not record.description:
-            record.description = description
+        if "description" in available_columns and not record.get("description"):
+            update_values: dict[str, object] = {"description": description}
+            if "updated_at" in available_columns:
+                update_values["updated_at"] = _utcnow()
+            await db.execute(
+                update(SystemSetting.__table__)
+                .where(SystemSetting.__table__.c.key == key)
+                .values(**update_values)
+            )
             changed = True
 
     if changed:
