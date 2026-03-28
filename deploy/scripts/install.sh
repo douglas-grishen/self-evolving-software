@@ -51,6 +51,28 @@ fi
 # ---------------------------------------------------------------------------
 # Build Docker images
 # ---------------------------------------------------------------------------
+# Re-sync framework-owned core API files on every deployment so instance-local
+# drift cannot silently remove required platform routes.
+CORE_FILES_MANIFEST="$APP_DIR/protected_framework_files.txt"
+if [ -f "$CORE_FILES_MANIFEST" ]; then
+    echo "Syncing framework-owned core backend files into evolved-app..."
+    while IFS= read -r rel_path; do
+        [ -z "$rel_path" ] && continue
+        case "$rel_path" in
+            \#*) continue ;;
+        esac
+
+        src="$APP_DIR/managed_app/$rel_path"
+        dst="$EVOLVED_DIR/$rel_path"
+        if [ ! -f "$src" ]; then
+            continue
+        fi
+
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+    done < "$CORE_FILES_MANIFEST"
+fi
+
 echo "Building Docker images..."
 docker compose -f docker-compose.prod.yml build --parallel
 echo "Build complete."

@@ -153,6 +153,39 @@ def test_increment_deploy_version_reads_typed_assignment(tmp_path):
     assert "DEPLOY_VERSION: int = 8" in version_file.read_text(encoding="utf-8")
 
 
+def test_sync_framework_core_files_restores_protected_backend_routes(tmp_path):
+    """Framework-owned core backend files should overwrite drift in evolved-app."""
+    repo_root = tmp_path / "repo"
+    managed_app_root = repo_root / "managed_app"
+    evolved_root = tmp_path / "evolved-app"
+    managed_file = managed_app_root / "backend" / "app" / "api" / "v1" / "apps.py"
+    evolved_file = evolved_root / "backend" / "app" / "api" / "v1" / "apps.py"
+    manifest = repo_root / "protected_framework_files.txt"
+
+    managed_file.parent.mkdir(parents=True, exist_ok=True)
+    evolved_file.parent.mkdir(parents=True, exist_ok=True)
+    managed_file.write_text("router = 'framework'\n", encoding="utf-8")
+    evolved_file.write_text("router = 'drifted'\n", encoding="utf-8")
+    manifest.write_text("backend/app/api/v1/apps.py\n", encoding="utf-8")
+
+    deployer = LocalDeployer(
+        EngineSettings(
+            repo_root=repo_root,
+            evolved_app_path=evolved_root,
+        )
+    )
+
+    original_manifest = git_ops_module._PROTECTED_FRAMEWORK_FILES_PATH
+    git_ops_module._PROTECTED_FRAMEWORK_FILES_PATH = manifest
+    try:
+        copied = deployer._sync_framework_core_files(evolved_root)
+    finally:
+        git_ops_module._PROTECTED_FRAMEWORK_FILES_PATH = original_manifest
+
+    assert copied == 1
+    assert evolved_file.read_text(encoding="utf-8") == "router = 'framework'\n"
+
+
 @pytest.mark.asyncio
 async def test_runtime_contract_smoke_checks_pass_when_probes_match(tmp_path, monkeypatch):
     """Deploy smoke checks should accept healthy mounted app contracts."""

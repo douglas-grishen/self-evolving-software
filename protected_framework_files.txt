@@ -1,0 +1,10 @@
+backend/app/main.py
+backend/app/api/v1/__init__.py
+backend/app/api/v1/auth.py
+backend/app/api/v1/chat.py
+backend/app/api/v1/health.py
+backend/app/api/v1/monitor.py
+backend/app/api/v1/evolution.py
+backend/app/api/v1/apps.py
+backend/app/api/v1/system.py
+backend/app/api/v1/settings.py

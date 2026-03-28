@@ -46,6 +46,7 @@ _RUNTIME_ARTIFACT_PATHS = (
 _RUNTIME_ARTIFACT_SUFFIXES = (".pyc", ".pyo")
 _RUNTIME_ARTIFACT_SEGMENTS = ("__pycache__",)
 _DEPLOY_VERSION_RE = re.compile(r"DEPLOY_VERSION(?:\s*:\s*[^=]+)?\s*=\s*(\d+)")
+_PROTECTED_FRAMEWORK_FILES_PATH = Path(__file__).resolve().parents[3] / "protected_framework_files.txt"
 
 class LocalDeployer:
     """Deploys validated code to the local evolved-app directory.
@@ -57,6 +58,36 @@ class LocalDeployer:
 
     def __init__(self, config: EngineSettings | None = None) -> None:
         self.config = config or settings
+
+    def _framework_template_root(self) -> Path:
+        """Return the framework-managed app template root."""
+        repo_managed_app = Path(self.config.repo_root).resolve() / "managed_app"
+        if repo_managed_app.exists():
+            return repo_managed_app
+        return Path(self.config.managed_app_path).resolve()
+
+    def _sync_framework_core_files(self, evolved_path: Path) -> int:
+        """Restore framework-owned core backend files into the evolved app."""
+        if not _PROTECTED_FRAMEWORK_FILES_PATH.exists():
+            return 0
+
+        template_root = self._framework_template_root()
+        copied = 0
+        for raw_line in _PROTECTED_FRAMEWORK_FILES_PATH.read_text(encoding="utf-8").splitlines():
+            rel_path = raw_line.strip()
+            if not rel_path or rel_path.startswith("#"):
+                continue
+            src = template_root / rel_path
+            dst = evolved_path / rel_path
+            if not src.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+
+        if copied:
+            logger.info("deploy.framework_core_synced", files=copied)
+        return copied
 
     async def deploy(self, context: EvolutionContext) -> DeploymentResult:
         """Apply generated files to evolved-app, commit locally, and rebuild.
@@ -102,6 +133,7 @@ class LocalDeployer:
 
         # Runtime artifacts inside evolved-app are not source changes and must not
         # participate in commits or block later rollback attempts.
+        self._sync_framework_core_files(evolved_path)
         self._restore_runtime_artifacts(repo)
 
         # Increment the deploy version baked into the image.
