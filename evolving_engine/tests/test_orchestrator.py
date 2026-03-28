@@ -17,7 +17,8 @@ from engine.models.backlog import (
     BacklogTaskStatus,
     BacklogTaskType,
 )
-from engine.models.evolution import EvolutionStatus
+from engine.models.evolution import EvolutionSource, EvolutionStatus
+from engine.monitor.models import ContractProbeFailure, RuntimeSnapshot
 from engine.orchestrator import Orchestrator
 
 
@@ -567,6 +568,86 @@ async def test_refresh_runtime_llm_config_falls_back_to_legacy_shared_settings(m
     assert isinstance(orchestrator.provider, DummyOpenAIProvider)
 
 
+def test_collect_runtime_incident_lessons_translates_structural_signals():
+    """Instance incidents should become reusable framework hardening lessons."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    snapshot = RuntimeSnapshot(
+        contract_failures=[
+            ContractProbeFailure(
+                app_key="framework",
+                method="POST",
+                path="/api/v1/chat",
+                description="Chat route",
+                expected_statuses=[200],
+                status_code=404,
+                detail="Not Found",
+            )
+        ],
+        recent_errors=[
+            {
+                "path": "/api/v1/settings/engine_llm_provider",
+                "status_code": 401,
+                "detail": "Unauthorized",
+            },
+            {
+                "exception": "UndefinedColumn: column system_settings.is_secret does not exist",
+            },
+            {
+                "exception": (
+                    "AccessDeniedException: explicit deny on bedrock:InvokeModel after "
+                    "fallback to llm_provider=bedrock"
+                ),
+            },
+        ],
+    )
+    ctx = create_context(
+        "Repair live instance runtime incident",
+        source=EvolutionSource.MONITOR,
+        runtime_snapshot=snapshot,
+    ).transition(EvolutionStatus.COMPLETED)
+
+    lessons = orchestrator._collect_runtime_incident_lessons(ctx)
+    titles = {lesson.title for lesson in lessons}
+
+    assert "Instance incidents must harden the open-source framework" in titles
+    assert "Promote critical instance routes into explicit runtime contracts" in titles
+    assert "Engine runtime settings endpoints must remain engine-readable" in titles
+    assert "Control-plane settings reads must tolerate schema drift" in titles
+    assert "Provider selection must fail closed when runtime config is unavailable" in titles
+
+
+@pytest.mark.asyncio
+async def test_extract_lessons_from_runtime_incident_reuses_memory_store():
+    """Runtime incident lessons should go through idempotent memory persistence."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _LessonReporter()
+    orchestrator.event_reporter = reporter
+    snapshot = RuntimeSnapshot(
+        contract_failures=[
+            ContractProbeFailure(
+                app_key="framework",
+                method="POST",
+                path="/api/v1/chat",
+                description="Chat route",
+                expected_statuses=[200],
+                status_code=404,
+                detail="Not Found",
+            )
+        ]
+    )
+    ctx = create_context(
+        "Repair missing chat route",
+        source=EvolutionSource.MONITOR,
+        runtime_snapshot=snapshot,
+    ).transition(EvolutionStatus.COMPLETED)
+
+    await orchestrator._extract_lessons_from_runtime_incident(ctx)
+
+    titles = [payload["title"] for payload in reporter.lessons]
+    assert "Instance incidents must harden the open-source framework" in titles
+    assert "Promote critical instance routes into explicit runtime contracts" in titles
+
+
 class _RecordingReporter:
     def __init__(self) -> None:
         self.updates: list[tuple[str, dict]] = []
@@ -597,6 +678,15 @@ class _SettingsReporter:
 
     async def get_setting(self, key: str):
         return self.values.get(key)
+
+
+class _LessonReporter:
+    def __init__(self) -> None:
+        self.lessons: list[dict[str, str]] = []
+
+    async def remember_lesson(self, **payload: str):
+        self.lessons.append(payload)
+        return f"lesson-{len(self.lessons)}"
 
 
 class _UsageTrackerStub:

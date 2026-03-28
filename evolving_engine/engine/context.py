@@ -151,7 +151,7 @@ def create_context(
                 include={
                     "observed_at", "reachable", "global_error_rate",
                     "total_requests", "total_errors", "anomalies",
-                    "recent_errors", "container_states",
+                    "recent_errors", "contract_failures", "container_states",
                 }
             )
         except Exception:

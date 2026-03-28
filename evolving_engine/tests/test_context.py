@@ -1,7 +1,8 @@
 """Tests for EvolutionContext state management."""
 
-from engine.context import EvolutionContext, create_context
-from engine.models.evolution import EvolutionStatus
+from engine.context import create_context
+from engine.models.evolution import EvolutionSource, EvolutionStatus
+from engine.monitor.models import ContractProbeFailure, RuntimeSnapshot
 
 
 def test_create_context():
@@ -57,3 +58,29 @@ def test_dry_run():
     """Dry run flag is set correctly."""
     ctx = create_context("Test request", dry_run=True)
     assert ctx.request.dry_run is True
+
+
+def test_create_context_preserves_contract_failures_in_runtime_snapshot():
+    """Monitor-triggered contexts keep contract probe evidence for later lessons."""
+    snapshot = RuntimeSnapshot(
+        contract_failures=[
+            ContractProbeFailure(
+                app_key="framework",
+                method="POST",
+                path="/api/v1/chat",
+                description="Chat API",
+                expected_statuses=[200],
+                status_code=404,
+                detail="Route missing",
+            )
+        ]
+    )
+
+    ctx = create_context(
+        "Repair missing runtime contract",
+        source=EvolutionSource.MONITOR,
+        runtime_snapshot=snapshot,
+    )
+
+    assert len(ctx.runtime_snapshot["contract_failures"]) == 1
+    assert ctx.runtime_snapshot["contract_failures"][0]["path"] == "/api/v1/chat"

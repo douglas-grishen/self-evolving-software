@@ -120,6 +120,17 @@ class BacklogProbeState:
         return self.actionable_item is None and self.blocked_frontier_item is not None
 
 
+@dataclass(frozen=True)
+class LessonCandidate:
+    """A lesson ready to be persisted into engine memory."""
+
+    category: str
+    title: str
+    content: str
+    severity: str = "warning"
+    source: str = "auto"
+
+
 class Orchestrator:
     """Drives the MAPE-K loop through a state machine.
 
@@ -474,6 +485,8 @@ class Orchestrator:
         should_extract = ctx.status.value == "failed" or (
             ctx.status.value == "completed" and ctx.retry_count > 0
         )
+        if ctx.status.value in ("completed", "failed"):
+            await self._extract_lessons_from_runtime_incident(ctx)
         if should_extract:
             await self._extract_lesson_from_failure(ctx)
 
@@ -1631,6 +1644,190 @@ set of tasks that can be executed across multiple autonomous runs.
     # Internal — lesson extraction
     # -----------------------------------------------------------------------
 
+    async def _extract_lessons_from_runtime_incident(self, ctx: EvolutionContext) -> None:
+        """Persist deterministic lessons for structural incidents seen on live instances."""
+        candidates = self._collect_runtime_incident_lessons(ctx)
+        if not candidates:
+            return
+
+        persisted = 0
+        for candidate in candidates:
+            lesson_id = await self.event_reporter.remember_lesson(
+                category=candidate.category,
+                title=candidate.title,
+                content=candidate.content,
+                severity=candidate.severity,
+                source=candidate.source,
+            )
+            if lesson_id:
+                persisted += 1
+
+        logger.info(
+            "lesson_extraction.runtime_incident",
+            request_id=ctx.request_id,
+            candidates=len(candidates),
+            persisted=persisted,
+        )
+
+    def _collect_runtime_incident_lessons(
+        self, ctx: EvolutionContext
+    ) -> list[LessonCandidate]:
+        """Translate runtime incident evidence into reusable framework lessons."""
+        if not ctx.runtime_snapshot:
+            return []
+
+        snapshot = ctx.runtime_snapshot
+        evidence_text = self._build_lesson_evidence_text(ctx).lower()
+        anomaly_types = {
+            str(item.get("type", "")).strip().lower()
+            for item in snapshot.get("anomalies", [])
+            if isinstance(item, dict)
+        }
+        contract_failures = snapshot.get("contract_failures") or []
+
+        has_missing_contract = (
+            bool(contract_failures)
+            or AnomalyType.MISSING_ENDPOINT.value in anomaly_types
+            or (
+                "/api/v1/" in evidence_text
+                and "404" in evidence_text
+                and "not found" in evidence_text
+            )
+        )
+        has_settings_auth = "/api/v1/settings" in evidence_text and any(
+            token in evidence_text for token in ("401", "403", "unauthorized", "forbidden")
+        )
+        has_schema_drift = any(
+            token in evidence_text
+            for token in (
+                "undefinedcolumn",
+                "does not exist",
+                "no such column",
+                "schema drift",
+                "missing column",
+                "is_secret",
+            )
+        )
+        has_provider_fallback = (
+            "bedrock" in evidence_text
+            and any(
+                token in evidence_text
+                for token in (
+                    "accessdeniedexception",
+                    "explicit deny",
+                    "not authorized",
+                    "invokemodel",
+                )
+            )
+        ) or ("llm_provider=bedrock" in evidence_text or "provider=bedrock" in evidence_text)
+
+        lessons: list[LessonCandidate] = []
+        if any(
+            (
+                has_missing_contract,
+                has_settings_auth,
+                has_schema_drift,
+                has_provider_fallback,
+            )
+        ):
+            lessons.append(
+                LessonCandidate(
+                    category="best_practice",
+                    title="Instance incidents must harden the open-source framework",
+                    content=(
+                        "When a live-instance incident reveals a framework weakness, "
+                        "repair the instance but also upstream the fix into managed_app/ "
+                        "or evolving_engine/ and add a regression test, deploy smoke "
+                        "check, or runtime contract probe so every installation inherits "
+                        "the hardening."
+                    ),
+                    severity="warning",
+                )
+            )
+        if has_missing_contract:
+            lessons.append(
+                LessonCandidate(
+                    category="architecture_note",
+                    title="Promote critical instance routes into explicit runtime contracts",
+                    content=(
+                        "Critical routes used by the UI or engine must be mounted "
+                        "explicitly and protected by deploy smoke checks or runtime "
+                        "contract probes. Do not rely on silent router auto-discovery "
+                        "for paths like /api/v1/chat or other control-plane APIs."
+                    ),
+                    severity="warning",
+                )
+            )
+        if has_settings_auth:
+            lessons.append(
+                LessonCandidate(
+                    category="architecture_note",
+                    title="Engine runtime settings endpoints must remain engine-readable",
+                    content=(
+                        "The engine must be able to read /api/v1/settings/* without "
+                        "interactive auth so it can resolve engine_llm_provider and "
+                        "engine_llm_model at runtime. Protect that path with a smoke "
+                        "check; if it fails, the engine can fall back to stale provider "
+                        "defaults and stop evolving."
+                    ),
+                    severity="critical",
+                )
+            )
+        if has_schema_drift:
+            lessons.append(
+                LessonCandidate(
+                    category="bug_fix",
+                    title="Control-plane settings reads must tolerate schema drift",
+                    content=(
+                        "When reading system settings or similar control-plane tables, "
+                        "select only the columns you need instead of hydrating full ORM "
+                        "rows. Instance databases can lag the code, and missing columns "
+                        "such as is_secret must not take down the settings API."
+                    ),
+                    severity="critical",
+                )
+            )
+        if has_provider_fallback:
+            lessons.append(
+                LessonCandidate(
+                    category="bug_fix",
+                    title="Provider selection must fail closed when runtime config is unavailable",
+                    content=(
+                        "If runtime LLM settings cannot be loaded, raise a clear "
+                        "configuration error instead of silently falling back to a "
+                        "different provider such as Bedrock. Silent fallback can route "
+                        "the engine to a disabled backend and halt autonomous evolution."
+                    ),
+                    severity="critical",
+                )
+            )
+
+        return self._dedupe_lesson_candidates(lessons)
+
+    def _build_lesson_evidence_text(self, ctx: EvolutionContext) -> str:
+        """Flatten request, validation and runtime evidence into searchable text."""
+        parts = [ctx.request.user_request]
+        if ctx.error:
+            parts.append(ctx.error)
+        if ctx.validation_result and ctx.validation_result.errors:
+            parts.extend(ctx.validation_result.errors[:10])
+        if ctx.runtime_snapshot:
+            parts.append(json.dumps(ctx.runtime_snapshot, default=str)[:4000])
+        return "\n".join(part for part in parts if part)
+
+    def _dedupe_lesson_candidates(
+        self, lessons: list[LessonCandidate]
+    ) -> list[LessonCandidate]:
+        """Keep a stable unique set of lessons by category/title."""
+        deduped: dict[tuple[str, str], LessonCandidate] = {}
+        for lesson in lessons:
+            key = (
+                re.sub(r"\s+", " ", lesson.category.strip().lower()),
+                re.sub(r"\s+", " ", lesson.title.strip().lower()),
+            )
+            deduped.setdefault(key, lesson)
+        return list(deduped.values())
+
     async def _extract_lesson_from_failure(self, ctx: EvolutionContext) -> None:
         """Analyze a failed or retried evolution and auto-generate a lesson.
 
@@ -1704,7 +1901,7 @@ set of tasks that can be executed across multiple autonomous runs.
             import json as _json
             lesson_data = _json.loads(text)
 
-            await self.event_reporter.post_lesson(
+            await self.event_reporter.remember_lesson(
                 category=lesson_data["category"],
                 title=lesson_data["title"],
                 content=lesson_data["content"],

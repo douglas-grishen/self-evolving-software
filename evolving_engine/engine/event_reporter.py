@@ -13,6 +13,7 @@ the engine continues operating. Events are always logged locally via structlog.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +32,11 @@ logger = structlog.get_logger()
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _RETRY_BASE_DELAY_SECONDS = 1.0
 _RETRY_MAX_DELAY_SECONDS = 8.0
+
+
+def _normalize_lesson_key(value: str) -> str:
+    """Normalize lesson identifiers so near-identical titles dedupe cleanly."""
+    return re.sub(r"\s+", " ", value.strip().lower())
 
 
 class EventReporter:
@@ -367,7 +373,7 @@ class EventReporter:
     # Engine Memory (Lessons Learned)
     # ------------------------------------------------------------------
 
-    async def fetch_lessons(self) -> list[EngineMemory]:
+    async def fetch_lessons(self, active_only: bool = True) -> list[EngineMemory]:
         """Fetch all active lessons from the backend memory store.
 
         Called by DataManagerAgent at the start of every evolution cycle.
@@ -378,7 +384,7 @@ class EventReporter:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/api/v1/memory",
-                    params={"active_only": "true"},
+                    params={"active_only": str(active_only).lower()},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -394,6 +400,29 @@ class EventReporter:
         except Exception as exc:
             logger.debug("event_reporter.fetch_lessons_error", error=str(exc))
             return []
+
+    async def patch_lesson(self, lesson_id: str, payload: dict[str, Any]) -> bool:
+        """Update an existing lesson in the backend memory store."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.patch(
+                    f"{self.base_url}/api/v1/memory/{lesson_id}",
+                    json=payload,
+                )
+                resp.raise_for_status()
+            logger.info(
+                "event_reporter.lesson_patched",
+                lesson_id=lesson_id,
+                fields=sorted(payload.keys()),
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "event_reporter.patch_lesson_error",
+                lesson_id=lesson_id,
+                error=str(exc),
+            )
+            return False
 
     async def post_lesson(
         self,
@@ -434,6 +463,74 @@ class EventReporter:
         except Exception as exc:
             logger.debug("event_reporter.post_lesson_error", error=str(exc))
             return None
+
+    async def remember_lesson(
+        self,
+        category: str,
+        title: str,
+        content: str,
+        severity: str = "warning",
+        source: str = "auto",
+    ) -> str | None:
+        """Create a lesson or reinforce an existing matching one.
+
+        Matching is intentionally conservative: category + normalized title.
+        This keeps repeated incident learnings from flooding the memory store.
+        """
+        lessons = await self.fetch_lessons(active_only=False)
+        existing = self._find_matching_lesson(lessons, category=category, title=title)
+
+        if existing is None:
+            return await self.post_lesson(
+                category=category,
+                title=title,
+                content=content,
+                severity=severity,
+                source=source,
+            )
+
+        if not existing.active:
+            logger.info(
+                "event_reporter.lesson_match_inactive",
+                lesson_id=existing.id,
+                title=title[:80],
+            )
+            return existing.id
+
+        patch_payload: dict[str, Any] = {
+            "times_reinforced": max(existing.times_reinforced, 0) + 1,
+        }
+        if severity == "critical" and existing.severity != "critical":
+            patch_payload["severity"] = severity
+
+        updated = await self.patch_lesson(existing.id, patch_payload)
+        if updated:
+            logger.info(
+                "event_reporter.lesson_reinforced",
+                lesson_id=existing.id,
+                title=title[:80],
+                times_reinforced=patch_payload["times_reinforced"],
+            )
+            return existing.id
+        return None
+
+    @staticmethod
+    def _find_matching_lesson(
+        lessons: list[EngineMemory],
+        *,
+        category: str,
+        title: str,
+    ) -> EngineMemory | None:
+        """Return the first lesson whose category/title already match this one."""
+        normalized_category = _normalize_lesson_key(category)
+        normalized_title = _normalize_lesson_key(title)
+        for lesson in lessons:
+            if (
+                _normalize_lesson_key(lesson.category) == normalized_category
+                and _normalize_lesson_key(lesson.title) == normalized_title
+            ):
+                return lesson
+        return None
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers
