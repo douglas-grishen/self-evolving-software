@@ -202,6 +202,7 @@ def test_protected_framework_manifest_covers_runtime_support_modules():
         "backend/app/api/v1/settings.py",
         "backend/app/models/apps.py",
         "backend/app/models/system_settings.py",
+        "backend/app/middleware/metrics.py",
         "backend/app/schemas/apps.py",
         "backend/app/schemas/system_settings.py",
     }.issubset(entries)
