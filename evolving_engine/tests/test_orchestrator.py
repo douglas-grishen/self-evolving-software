@@ -18,6 +18,7 @@ from engine.models.backlog import (
     BacklogTaskType,
 )
 from engine.models.evolution import EvolutionSource, EvolutionStatus
+from engine.models.purpose import Purpose, PurposeIdentity
 from engine.monitor.models import ContractProbeFailure, RuntimeSnapshot
 from engine.orchestrator import Orchestrator
 
@@ -648,6 +649,55 @@ async def test_extract_lessons_from_runtime_incident_reuses_memory_store():
     assert "Promote critical instance routes into explicit runtime contracts" in titles
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_continuous_purpose_prefers_backend_over_repo_seed(tmp_path):
+    """A repo seed must not overwrite the purpose already persisted for this instance."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(
+        purpose_path=tmp_path / ".engine-state" / "purpose.yaml",
+        purpose_history_path=tmp_path / ".engine-state" / "purpose_history",
+        purpose_seed_path=tmp_path / "purpose.yaml",
+    )
+    orchestrator.leader = SimpleNamespace(purpose=None)
+    orchestrator._purpose_synced = False
+    orchestrator.event_reporter = _PurposeBootstrapReporter(
+        backend_purpose=_purpose(name="Instance Purpose", version=7)
+    )
+    _purpose(name="Repo Seed", version=99).save(orchestrator.config.purpose_seed_path)
+
+    await orchestrator._bootstrap_continuous_purpose()
+
+    assert orchestrator.purpose is not None
+    assert orchestrator.purpose.identity.name == "Instance Purpose"
+    assert orchestrator.leader.purpose.identity.name == "Instance Purpose"
+    assert orchestrator.event_reporter.posted == []
+    persisted = Purpose.load(orchestrator.config.purpose_path)
+    assert persisted.identity.name == "Instance Purpose"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_continuous_purpose_seeds_backend_once_when_empty(tmp_path):
+    """A fresh instance can seed from Git once, but stores the runtime copy outside the repo."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(
+        purpose_path=tmp_path / ".engine-state" / "purpose.yaml",
+        purpose_history_path=tmp_path / ".engine-state" / "purpose_history",
+        purpose_seed_path=tmp_path / "purpose.yaml",
+    )
+    orchestrator.leader = SimpleNamespace(purpose=None)
+    orchestrator._purpose_synced = False
+    orchestrator.event_reporter = _PurposeBootstrapReporter(backend_purpose=None)
+    _purpose(name="Seed Purpose", version=3).save(orchestrator.config.purpose_seed_path)
+
+    await orchestrator._bootstrap_continuous_purpose()
+
+    assert orchestrator.purpose is not None
+    assert orchestrator.purpose.identity.name == "Seed Purpose"
+    assert orchestrator.event_reporter.posted == [("Seed Purpose", 3)]
+    assert orchestrator.config.purpose_path.exists()
+    assert not orchestrator.config.purpose_history_path.exists()
+
+
 class _RecordingReporter:
     def __init__(self) -> None:
         self.updates: list[tuple[str, dict]] = []
@@ -687,6 +737,19 @@ class _LessonReporter:
     async def remember_lesson(self, **payload: str):
         self.lessons.append(payload)
         return f"lesson-{len(self.lessons)}"
+
+
+class _PurposeBootstrapReporter:
+    def __init__(self, backend_purpose: Purpose | None) -> None:
+        self.backend_purpose = backend_purpose
+        self.posted: list[tuple[str, int]] = []
+
+    async def fetch_purpose(self):
+        return self.backend_purpose
+
+    async def post_purpose(self, purpose: Purpose, inception_id: str | None = None):
+        self.posted.append((purpose.identity.name, purpose.version))
+        return True
 
 
 class _UsageTrackerStub:
@@ -751,4 +814,19 @@ def _backlog_item(
         failure_streak=failure_streak,
         retry_after=retry_after,
         started_at=started_at,
+    )
+
+
+def _purpose(name: str, version: int = 1) -> Purpose:
+    return Purpose(
+        version=version,
+        identity=PurposeIdentity(
+            name=name,
+            description=f"{name} description",
+        ),
+        functional_requirements=["Keep evolving safely."],
+        technical_requirements=["FastAPI + React"],
+        security_requirements=["No secrets in source control"],
+        constraints=["No infrastructure edits"],
+        evolution_directives=["Prefer minimal changes"],
     )

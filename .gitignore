@@ -118,3 +118,6 @@ infra/cdk.out/
 
 # Claude Code internals (keep worktrees out of tracked files)
 .claude/worktrees/
+
+# Engine runtime state (instance-local, must not bleed through Git)
+.engine-state/

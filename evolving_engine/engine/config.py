@@ -24,11 +24,14 @@ class EngineSettings(BaseSettings):
     # Genesis — immutable initial state snapshot
     genesis_path: Path = Path("../genesis.yaml")
 
-    # Purpose — the guiding specification for evolution decisions
-    purpose_path: Path = Path("../purpose.yaml")
+    # Purpose runtime state — mutable per instance and intentionally untracked.
+    purpose_path: Path = Path("../.engine-state/purpose.yaml")
 
-    # Purpose history — archived versions after Inception modifications
-    purpose_history_path: Path = Path("../purpose_history")
+    # Purpose history — archived runtime versions after Inception modifications.
+    purpose_history_path: Path = Path("../.engine-state/purpose_history")
+
+    # Seed Purpose template tracked in Git for first-boot initialization only.
+    purpose_seed_path: Path = Path("../purpose.yaml")
 
     # Runtime contract probes for mounted desktop apps
     runtime_contracts_path: Path | None = None

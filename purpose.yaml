@@ -1,22 +1,19 @@
-version: 2
-updated_at: "2026-03-21T00:00:00Z"
+version: 1
+updated_at: "2026-03-16T00:00:00Z"
 
 identity:
-  name: Competitive Intelligence
+  name: Self-Evolving Software System
   description: >
-    A web application that autonomously builds and continuously refines a
-    comprehensive competitive intelligence model of the global apparel industry
-    by discovering companies, analyzing their strategies, supply chains,
-    products, market positioning, and relationships.
+    An autonomous software system that monitors its own runtime behavior,
+    detects anomalies, and evolves its codebase to fix issues, add features,
+    and improve itself — all without human intervention.
 
 functional_requirements:
-  - Provide a user-facing Competitive Intelligence application for exploring apparel companies, brands, suppliers, products, and market relationships
-  - Autonomously discover, ingest, and enrich structured information about apparel companies from public sources and approved APIs
-  - Support search, comparison, and timeline workflows for tracked companies and market signals
-  - Surface data provenance, freshness, and confidence for collected intelligence
+  - Provide a web application with health monitoring and status dashboard
+  - Autonomously detect and fix runtime anomalies (high error rates, latency, crashes)
   - Support user-triggered evolution requests via natural language
   - Support Inceptions that modify the system's Purpose and evolution direction
-  - Provide an administrative health and evolution dashboard for monitoring the autonomous system
+  - Display real-time evolution monitoring through a web UI
   - Maintain an audit trail of all evolution cycles and their outcomes
   - Archive Purpose history when Inceptions modify the evolution direction
 
@@ -28,7 +25,6 @@ technical_requirements:
   - Alembic database migrations for all schema changes
   - All generated code must pass sandbox validation (static analysis, build, integration tests)
   - Structured logging via structlog for full observability
-  - The data model must support companies, brands, suppliers, retailers, products, geographies, and source provenance
 
 security_requirements:
   - No secrets in source code or version control
@@ -45,15 +41,11 @@ constraints:
   - Engine must not modify infrastructure code (infra/) autonomously
   - Frontend must remain functional during evolution cycles
   - Single EC2 instance deployment (no horizontal scaling)
-  - Autonomous evolutions should prefer deepening the existing Competitive Intelligence app before creating new top-level apps
-  - Do not create framework-only meta apps such as System Monitor or Evolution Monitor unless the Purpose is explicitly changed to require them
 
 evolution_directives:
   - Prefer minimal, focused changes that solve the specific problem
   - Always add tests for new functionality
   - Maintain backwards compatibility with existing API endpoints
   - Evaluate every evolution request against this Purpose before planning
-  - Prefer extending the existing active app when closing product gaps
-  - Treat health and evolution monitoring as built-in admin functionality, not as the primary product domain
   - When in doubt, choose the safer, simpler approach
   - Log all decisions and their reasoning for auditability

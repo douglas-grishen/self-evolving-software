@@ -526,11 +526,7 @@ class Orchestrator:
         self._running = True
         interval = self.config.monitor_interval_seconds
 
-        # Fetch Purpose from backend API (admin defined it via UI)
-        if not self.purpose:
-            self.purpose = await self._fetch_purpose_from_api()
-            if self.purpose:
-                self.leader.purpose = self.purpose
+        await self._bootstrap_continuous_purpose()
 
         logger.info(
             "continuous_loop.start",
@@ -539,10 +535,6 @@ class Orchestrator:
             genesis_version=self.genesis.version if self.genesis else None,
             purpose_version=self.purpose.version if self.purpose else None,
         )
-
-        # Post initial purpose to backend so the UI can display it
-        if self.purpose:
-            self._purpose_synced = await self.event_reporter.post_purpose(self.purpose)
 
         while self._running:
             try:
@@ -1612,21 +1604,123 @@ set of tasks that can be executed across multiple autonomous runs.
             logger.warning("genesis.load_error", error=str(exc))
             return None
 
+    async def _bootstrap_continuous_purpose(self) -> None:
+        """Resolve Purpose for continuous mode without leaking repo state across instances."""
+        runtime_purpose = self._load_runtime_purpose()
+        seed_bootstrapped = False
+        if runtime_purpose is None:
+            seed_purpose = self._load_seed_purpose()
+            if seed_purpose:
+                runtime_purpose = seed_purpose
+                self._persist_runtime_purpose(seed_purpose)
+                seed_bootstrapped = True
+
+        backend_purpose = await self.event_reporter.fetch_purpose()
+
+        selected_purpose: Purpose | None = None
+        should_sync_backend = False
+
+        if backend_purpose and runtime_purpose:
+            if not seed_bootstrapped and runtime_purpose.version > backend_purpose.version:
+                selected_purpose = runtime_purpose
+                should_sync_backend = True
+                logger.info(
+                    "purpose.bootstrap.using_runtime_newer_than_backend",
+                    runtime_version=runtime_purpose.version,
+                    backend_version=backend_purpose.version,
+                    identity=runtime_purpose.identity.name,
+                )
+            else:
+                selected_purpose = backend_purpose
+                self._persist_runtime_purpose(backend_purpose)
+                logger.info(
+                    "purpose.bootstrap.using_backend",
+                    runtime_version=runtime_purpose.version,
+                    backend_version=backend_purpose.version,
+                    seed_bootstrapped=seed_bootstrapped,
+                    identity=backend_purpose.identity.name,
+                )
+        elif backend_purpose:
+            selected_purpose = backend_purpose
+            self._persist_runtime_purpose(backend_purpose)
+            logger.info(
+                "purpose.bootstrap.using_backend",
+                backend_version=backend_purpose.version,
+                identity=backend_purpose.identity.name,
+            )
+        elif runtime_purpose:
+            selected_purpose = runtime_purpose
+            should_sync_backend = True
+            logger.info(
+                "purpose.bootstrap.using_local_runtime",
+                version=runtime_purpose.version,
+                identity=runtime_purpose.identity.name,
+                seed_bootstrapped=seed_bootstrapped,
+            )
+
+        self.purpose = selected_purpose
+        self.leader.purpose = selected_purpose
+        self._purpose_synced = selected_purpose is not None and not should_sync_backend
+
+        if selected_purpose and should_sync_backend:
+            self._purpose_synced = await self.event_reporter.post_purpose(selected_purpose)
+
     def _load_purpose(self) -> Purpose | None:
-        """Load the current Purpose from disk. Returns None if not found."""
+        """Load the current Purpose, preferring runtime state over the repo seed."""
+        runtime_purpose = self._load_runtime_purpose()
+        if runtime_purpose is not None:
+            return runtime_purpose
+
+        seed_purpose = self._load_seed_purpose()
+        if seed_purpose is not None:
+            self._persist_runtime_purpose(seed_purpose)
+            return seed_purpose
+        return None
+
+    def _load_runtime_purpose(self) -> Purpose | None:
+        """Load the instance-local Purpose state from disk."""
+        return self._load_purpose_from_path(self.config.purpose_path, source="runtime")
+
+    def _load_seed_purpose(self) -> Purpose | None:
+        """Load the tracked seed Purpose used only for first-boot initialization."""
+        seed_path = self.config.purpose_seed_path
+        if seed_path == self.config.purpose_path:
+            return None
+        return self._load_purpose_from_path(seed_path, source="seed")
+
+    def _persist_runtime_purpose(self, purpose: Purpose) -> None:
+        """Persist the active Purpose into instance-local runtime state."""
         try:
-            purpose = Purpose.load(self.config.purpose_path)
+            purpose.save(self.config.purpose_path)
+        except Exception as exc:
+            logger.warning(
+                "purpose.persist_runtime_error",
+                path=str(self.config.purpose_path),
+                error=str(exc),
+            )
+
+    def _load_purpose_from_path(self, path: Path, *, source: str) -> Purpose | None:
+        """Load a Purpose from a specific path. Returns None if not found."""
+        try:
+            purpose = Purpose.load(path)
             logger.info(
                 "purpose.loaded",
+                source=source,
+                path=str(path),
                 version=purpose.version,
                 identity=purpose.identity.name,
             )
             return purpose
         except FileNotFoundError:
-            logger.warning("purpose.not_found", path=str(self.config.purpose_path))
+            logger.info("purpose.not_found", source=source, path=str(path))
             return None
         except Exception as exc:
-            logger.warning("purpose.load_error", error=str(exc))
+            logger.warning(
+                "purpose.load_error",
+                source=source,
+                path=str(path),
+                error=str(exc),
+            )
             return None
 
     async def _fetch_purpose_from_api(self) -> Purpose | None:
