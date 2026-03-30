@@ -1,6 +1,6 @@
 """Data models for the Monitor phase of the MAPE-K loop.
 
-A RuntimeSnapshot is a point-in-time observation of the Managed System's
+A RuntimeSnapshot is a point-in-time observation of the Operational Plane's
 health, performance, and error state. Anomalies are deviations from expected
 behavior that the Analyze phase will interpret to decide whether the system
 needs to evolve.
@@ -49,8 +49,20 @@ class EndpointMetrics(BaseModel):
     error_count: int
 
 
+class ContractProbeFailure(BaseModel):
+    """A mounted app contract probe that returned the wrong result."""
+
+    app_key: str
+    method: str
+    path: str
+    description: str
+    expected_statuses: list[int] = Field(default_factory=list)
+    status_code: int | None = None
+    detail: str = ""
+
+
 class HealthCheck(BaseModel):
-    """Result of the detailed health probe against the Managed System."""
+    """Result of the detailed health probe against the Operational Plane."""
 
     status: str                  # "ok" | "degraded"
     checks: dict[str, str]
@@ -61,7 +73,7 @@ class HealthCheck(BaseModel):
 
 
 class DatabaseSchema(BaseModel):
-    """Current database schema as reported by the Managed System."""
+    """Current database schema as reported by the Operational Plane."""
 
     tables: list[dict[str, Any]] = Field(default_factory=list)
     table_count: int = 0
@@ -69,7 +81,7 @@ class DatabaseSchema(BaseModel):
 
 
 class RuntimeSnapshot(BaseModel):
-    """Complete point-in-time observation of the Managed System.
+    """Complete point-in-time observation of the Operational Plane.
 
     Produced by RuntimeObserver and consumed by the Analyze phase to decide
     whether and what kind of evolution is needed.
@@ -86,6 +98,7 @@ class RuntimeSnapshot(BaseModel):
     uptime_seconds: float = 0.0
     endpoints: list[EndpointMetrics] = Field(default_factory=list)
     recent_errors: list[dict[str, Any]] = Field(default_factory=list)
+    contract_failures: list[ContractProbeFailure] = Field(default_factory=list)
 
     # Database state
     schema: DatabaseSchema | None = None

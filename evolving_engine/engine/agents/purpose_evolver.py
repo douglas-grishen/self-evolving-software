@@ -15,11 +15,12 @@ Safety rails:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
 from engine.config import EngineSettings
+from engine.models.framework_invariants import FrameworkInvariants
 from engine.models.inception import InceptionRequest, InceptionResult
 from engine.models.purpose import Purpose
 from engine.providers.base import BaseLLMProvider
@@ -32,12 +33,14 @@ Your role is to analyze an Inception — a directive that seeks to change the sy
 evolution direction — and produce an updated Purpose specification.
 
 You receive:
-1. The current Purpose (the system's guiding specification)
-2. An Inception directive with a rationale
+1. The framework invariants (non-negotiable platform and safety rules)
+2. The current Purpose (the system's guiding specification)
+3. An Inception directive with a rationale
 
 You must:
 1. Analyze whether the inception is valid and beneficial
-2. Determine which sections of the Purpose need modification
+2. Determine which sections of the Purpose need modification without
+   violating the framework invariants
 3. Produce a complete updated Purpose as a JSON object
 
 SAFETY RAILS — you MUST reject inceptions that:
@@ -46,6 +49,7 @@ SAFETY RAILS — you MUST reject inceptions that:
 - Would allow the engine to deploy untested code
 - Would remove constraints on risk levels for autonomous evolutions
 - Would grant the engine access to modify infrastructure code autonomously
+- Would conflict with the framework invariants shared by all instances
 
 If the inception is valid, produce the updated Purpose with all fields.
 If the inception must be rejected, return the current Purpose unchanged and
@@ -60,9 +64,15 @@ Output a JSON object with these fields:
 class PurposeEvolver:
     """Processes Inceptions to evolve the system's Purpose."""
 
-    def __init__(self, provider: BaseLLMProvider, config: EngineSettings) -> None:
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        config: EngineSettings,
+        framework_invariants: FrameworkInvariants | None = None,
+    ) -> None:
         self.provider = provider
         self.config = config
+        self.framework_invariants = framework_invariants
 
     async def evolve(
         self, current_purpose: Purpose, inception: InceptionRequest
@@ -79,7 +89,13 @@ class PurposeEvolver:
             directive=inception.directive[:100],
         )
 
+        framework_context = (
+            self.framework_invariants.to_prompt_context()
+            if self.framework_invariants
+            else "No framework invariants loaded."
+        )
         user_prompt = (
+            f"## Framework Invariants\n{framework_context}\n\n"
             f"## Current Purpose\n```yaml\n{current_purpose.to_yaml_string()}\n```\n\n"
             f"## Inception Directive\n{inception.directive}\n\n"
             f"## Rationale\n{inception.rationale or 'No rationale provided.'}"
@@ -100,7 +116,7 @@ class PurposeEvolver:
             new_purpose = new_purpose.model_copy(
                 update={
                     "version": current_purpose.version + 1,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                 }
             )
             # Archive old purpose and save new one
@@ -121,7 +137,11 @@ class PurposeEvolver:
                 reason=reasoning[:200],
             )
 
-        changes_summary = current_purpose.diff_summary(new_purpose) if accepted else f"Rejected: {reasoning}"
+        changes_summary = (
+            current_purpose.diff_summary(new_purpose)
+            if accepted
+            else f"Rejected: {reasoning}"
+        )
 
         result = InceptionResult(
             inception_id=inception.id,

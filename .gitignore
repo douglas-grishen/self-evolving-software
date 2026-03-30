@@ -115,6 +115,8 @@ credentials/
 infra/deploy.env
 infra/cdk.context.json
 infra/cdk.out/
+instances/*
+!instances/README.md
 
 # Claude Code internals (keep worktrees out of tracked files)
 .claude/worktrees/

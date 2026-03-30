@@ -1,19 +1,19 @@
-"""EC2 Stack — single instance hosting both MAPE-K subsystems via Docker Compose.
+"""EC2 Stack — single instance hosting both planes via Docker Compose.
 
 Architecture (MAPE-K self-adaptive system):
 ┌─────────────────────────────────────────────────────────────────┐
 │  EC2 Instance (t3.medium, Amazon Linux 2023)                    │
 │                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  MANAGED SYSTEM  (managed-system Docker network)         │   │
-│  │  postgres (EBS /mnt/pgdata) + backend + frontend (:80)   │   │
-│  └──────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  OPERATIONAL PLANE (operational-plane Docker network)     │ │
+│  │  postgres (EBS /mnt/pgdata) + backend + frontend (:80)    │ │
+│  └────────────────────────────────────────────────────────────┘ │
 │                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  AUTONOMIC MANAGER  (autonomic-manager Docker network)   │   │
-│  │  engine: Leader → DataManager → Generator → Validator    │   │
-│  │  Interfaces: file system (ro), Docker socket, Git, AWS   │   │
-│  └──────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  EVOLUTION PLANE (evolution-plane Docker network)         │ │
+│  │  engine: Leader → DataManager → Generator → Validator     │ │
+│  │  Interfaces: file system (ro), Docker socket, Git, AWS    │ │
+│  └────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 
 Resources:
@@ -21,8 +21,10 @@ Resources:
 - EBS GP3 volume for PostgreSQL data persistence (/mnt/pgdata)
 - IAM role: SSM (access), CodeDeploy (CI/CD), Bedrock (LLM), CodeBuild (sandbox)
 - CodeDeploy application + deployment group for automated deployments
-- User data: Docker + Compose + CodeDeploy agent, EBS mount, service bootstrap
+- User data: Docker + Compose + CodeDeploy agent, EBS mount, instance env bootstrap
 """
+
+import shlex
 
 import aws_cdk as cdk
 from aws_cdk import RemovalPolicy, Stack, Tags
@@ -30,6 +32,13 @@ from aws_cdk import aws_codedeploy as codedeploy
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_iam as iam
 from constructs import Construct
+
+from instance_overlay import InstanceOverlay
+
+
+def _env_line(key: str, value: str) -> str:
+    """Render one shell-safe dotenv assignment."""
+    return f"{key}={shlex.quote(value)}"
 
 
 class Ec2Stack(Stack):
@@ -41,6 +50,8 @@ class Ec2Stack(Stack):
         construct_id: str,
         vpc: ec2.Vpc,
         ec2_sg: ec2.SecurityGroup,
+        instance_overlay: InstanceOverlay,
+        project_name: str = "self-evolving-software",
         instance_type_str: str = "t3.medium",
         ebs_data_size_gb: int = 30,
         **kwargs,
@@ -48,20 +59,6 @@ class Ec2Stack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         region = Stack.of(self).region
-
-        # ── Deployment context (set via --context on CLI, never hardcoded) ───
-        # All values here are personal/deployment-specific and must NOT be
-        # committed to source control. Pass them via:
-        #   cdk deploy --context github_owner=myuser --context github_repo=myrepo
-        # or set CDK_CONTEXT_* env vars. See infra/deploy.env.example.
-        github_owner = self.node.try_get_context("github_owner")
-        github_repo = self.node.try_get_context("github_repo") or "self-evolving-software"
-
-        if not github_owner:
-            raise ValueError(
-                "CDK context 'github_owner' is required. "
-                "Pass it with: cdk deploy --context github_owner=YOUR_GITHUB_USER"
-            )
 
         # ── IAM Role ────────────────────────────────────────────────────────
         role = iam.Role(
@@ -134,6 +131,9 @@ class Ec2Stack(Stack):
         )
 
         # ── User Data Script ────────────────────────────────────────────────
+        framework_root = instance_overlay.framework_root
+        bundle_root = instance_overlay.bundle_root
+        instance_name = f"{project_name}-{instance_overlay.instance_key}"
         user_data = ec2.UserData.for_linux()
         user_data.add_commands(
             "set -euxo pipefail",
@@ -194,26 +194,57 @@ class Ec2Stack(Stack):
             "# Set ownership for PostgreSQL container (uid 999 = postgres in alpine image)",
             'chown -R 999:999 "$MOUNT_POINT/data"',
             "",
-            "# --- Clone repository ---",
-            "cd /opt",
-            f"git clone https://github.com/{github_owner}/{github_repo}.git self-evolving-software",
-            "cd self-evolving-software",
+            "# --- Prepare framework directories ---",
+            f"FRAMEWORK_ROOT={shlex.quote(framework_root)}",
+            f"BUNDLE_ROOT={shlex.quote(bundle_root)}",
+            f"EVOLVED_APP_ROOT={shlex.quote(instance_overlay.evolved_app_root)}",
+            f"COMPOSE_PROJECT={shlex.quote(instance_overlay.compose_project)}",
+            'mkdir -p "$(dirname "$FRAMEWORK_ROOT")" "$BUNDLE_ROOT" "$FRAMEWORK_ROOT" "$EVOLVED_APP_ROOT"',
             "",
             "# --- Create .env file ---",
             'PGPASS=$(openssl rand -base64 24 | tr -dc "a-zA-Z0-9" | head -c 24)',
-            "cat > .env << ENVEOF",
+            'cat > "$FRAMEWORK_ROOT/.env" << ENVEOF',
             "POSTGRES_USER=postgres",
             "POSTGRES_PASSWORD=$PGPASS",
-            "POSTGRES_DB=managed_app",
+            _env_line("POSTGRES_DB", instance_overlay.db_name),
             f"AWS_REGION={region}",
+            _env_line("INSTANCE_KEY", instance_overlay.instance_key),
+            _env_line("INSTANCE_OVERLAY_PATH", instance_overlay.instance_overlay_path),
+            _env_line("PUBLIC_HOST", instance_overlay.public_host),
+            _env_line("FRAMEWORK_ROOT", framework_root),
+            _env_line("EVOLVED_APP_ROOT", instance_overlay.evolved_app_root),
+            _env_line("INSTANCE_STATE_ROOT", instance_overlay.instance_state_root),
+            _env_line("PURPOSE_PATH", instance_overlay.purpose_path),
+            _env_line("PURPOSE_HISTORY_PATH", instance_overlay.purpose_history_path),
+            _env_line("GENESIS_PATH", instance_overlay.genesis_path),
+            _env_line(
+                "GENESIS_SEED_PATH",
+                f"{framework_root}/{instance_overlay.genesis_repo_path}",
+            ),
+            _env_line(
+                "RUNTIME_CONTRACTS_SEED_PATH",
+                f"{framework_root}/{instance_overlay.contracts_repo_path}",
+            ),
+            _env_line("RUNTIME_CONTRACTS_PATH", instance_overlay.runtime_contracts_path),
+            _env_line("USAGE_STATE_PATH", instance_overlay.usage_state_path),
+            _env_line("COMPOSE_PROJECT", instance_overlay.compose_project),
+            _env_line("COMPOSE_FILE", "docker-compose.prod.yml"),
+            _env_line("APP_APP_NAME", instance_overlay.app_name),
             "ENVEOF",
             "",
             "# Save a backup copy for CodeDeploy to use",
-            "cp .env /home/ec2-user/.env",
+            'cp "$FRAMEWORK_ROOT/.env" /home/ec2-user/.env',
             "chown ec2-user:ec2-user /home/ec2-user/.env",
             "",
-            "# --- Start services ---",
-            "docker compose -f docker-compose.prod.yml up -d --build",
+            "# --- Prepare instance-local state only ---",
+            'set -a',
+            '. "$FRAMEWORK_ROOT/.env"',
+            'set +a',
+            'mkdir -p "$EVOLVED_APP_ROOT" "$INSTANCE_STATE_ROOT" "$PURPOSE_HISTORY_PATH"',
+            'rm -f "$FRAMEWORK_ROOT/purpose.yaml"',
+            'rm -f "$EVOLVED_APP_ROOT/.engine-state/purpose.yaml"',
+            'rm -f "$INSTANCE_STATE_ROOT/purpose.yaml"',
+            'echo "Bootstrap complete. Waiting for CodeDeploy to deliver the selected GitHub source bundle."',
         )
 
         # ── EC2 Instance ────────────────────────────────────────────────────
@@ -237,7 +268,7 @@ class Ec2Stack(Stack):
             ],
         )
 
-        Tags.of(self.instance).add("Name", "self-evolving-software")
+        Tags.of(self.instance).add("Name", instance_name)
 
         # ── EBS Volume for PostgreSQL Data ──────────────────────────────────
         pg_volume = ec2.Volume(
@@ -250,7 +281,7 @@ class Ec2Stack(Stack):
             removal_policy=RemovalPolicy.SNAPSHOT,
         )
 
-        Tags.of(pg_volume).add("Name", "self-evolving-pgdata")
+        Tags.of(pg_volume).add("Name", f"{instance_name}-pgdata")
 
         ec2.CfnVolumeAttachment(
             self,
@@ -275,16 +306,16 @@ class Ec2Stack(Stack):
         self.codedeploy_app = codedeploy.ServerApplication(
             self,
             "CodeDeployApp",
-            application_name="self-evolving-software",
+            application_name=instance_overlay.codedeploy_app_name,
         )
 
         self.deployment_group = codedeploy.ServerDeploymentGroup(
             self,
             "DeploymentGroup",
             application=self.codedeploy_app,
-            deployment_group_name="self-evolving-software-dg",
+            deployment_group_name=instance_overlay.deployment_group_name,
             ec2_instance_tags=codedeploy.InstanceTagSet(
-                {"Name": ["self-evolving-software"]},
+                {"Name": [instance_name]},
             ),
             install_agent=True,
             deployment_config=codedeploy.ServerDeploymentConfig.ALL_AT_ONCE,

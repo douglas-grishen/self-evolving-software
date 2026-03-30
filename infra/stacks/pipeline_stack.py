@@ -26,6 +26,10 @@ from aws_cdk import aws_codepipeline as codepipeline
 from aws_cdk import aws_codepipeline_actions as cpactions
 from constructs import Construct
 
+from instance_overlay import InstanceOverlay
+
+_OFFICIAL_GITHUB_OWNER = "douglas-grishen"
+
 
 class PipelineStack(Stack):
     """Creates the CI/CD pipeline that deploys code to the EC2 instance."""
@@ -36,21 +40,16 @@ class PipelineStack(Stack):
         construct_id: str,
         codedeploy_app: codedeploy.ServerApplication,
         deployment_group: codedeploy.ServerDeploymentGroup,
+        instance_overlay: InstanceOverlay,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         # ── Deployment context (personal values — never hardcoded) ───────────
-        github_owner = self.node.try_get_context("github_owner")
+        github_owner = self.node.try_get_context("github_owner") or _OFFICIAL_GITHUB_OWNER
         github_repo = self.node.try_get_context("github_repo") or "self-evolving-software"
         github_branch = self.node.try_get_context("github_branch") or "main"
         connection_arn = self.node.try_get_context("connection_arn")
-
-        if not github_owner:
-            raise ValueError(
-                "CDK context 'github_owner' is required. "
-                "Pass it with: cdk deploy --context github_owner=YOUR_GITHUB_USER"
-            )
 
         if not connection_arn:
             raise ValueError(
@@ -81,7 +80,7 @@ class PipelineStack(Stack):
         self.pipeline = codepipeline.Pipeline(
             self,
             "EvolvingPipeline",
-            pipeline_name="self-evolving-software-pipeline",
+            pipeline_name=instance_overlay.pipeline_name,
             pipeline_type=codepipeline.PipelineType.V2,
             stages=[
                 codepipeline.StageProps(

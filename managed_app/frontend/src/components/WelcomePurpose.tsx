@@ -1,145 +1,189 @@
 import { useState } from "react";
 import { AppWindow } from "./AppWindow";
-import { getAuthToken } from "../hooks/useAuth";
+import { fetchWithAuth } from "../hooks/useAuth";
 
 interface WelcomePurposeProps {
   onSaved: () => void;
 }
 
-// Build a purpose YAML string from structured fields
-function buildPurposeYaml(fields: PurposeFields): string {
-  const now = new Date().toISOString().split("T")[0];
+const PURPOSE_LIST_KEYS = [
+  "functional_requirements",
+  "technical_requirements",
+  "security_requirements",
+  "constraints",
+  "evolution_directives",
+] as const;
 
-  const list = (items: string[]) =>
-    items
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => `  - "${s}"`)
-      .join("\n");
+type PurposeListKey = (typeof PURPOSE_LIST_KEYS)[number];
 
+interface ParsedPurpose {
+  version: number | null;
+  identity: { name: string; description: string };
+  lists: Record<PurposeListKey, string[]>;
+}
+
+function createEmptyPurposeLists(): Record<PurposeListKey, string[]> {
+  return {
+    functional_requirements: [],
+    technical_requirements: [],
+    security_requirements: [],
+    constraints: [],
+    evolution_directives: [],
+  };
+}
+
+function buildPurposeTemplate(): string {
   return `version: 1
-updated_at: "${now}"
+updated_at: "${new Date().toISOString()}"
 
 identity:
-  name: "${fields.name}"
-  description: "${fields.description}"
+  name: ""
+  description: ""
 
 functional_requirements:
-${list(fields.functional)}
+  - ""
 
-technical_requirements:
-${list(fields.technical)}
+technical_requirements: []
 
-security_requirements:
-${list(fields.security)}
+security_requirements: []
 
-constraints:
-${list(fields.constraints)}
+constraints: []
 
-evolution_directives:
-${list(fields.directives)}
+evolution_directives: []
 `;
 }
 
-interface PurposeFields {
-  name: string;
-  description: string;
-  functional: string[];
-  technical: string[];
-  security: string[];
-  constraints: string[];
-  directives: string[];
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
 }
 
-function ListEditor({
-  label,
-  hint,
-  items,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  items: string[];
-  onChange: (items: string[]) => void;
-}) {
-  const update = (i: number, val: string) => {
-    const next = [...items];
-    next[i] = val;
-    onChange(next);
+function parsePurposeYaml(yaml: string): ParsedPurpose {
+  const parsed: ParsedPurpose = {
+    version: null,
+    identity: { name: "", description: "" },
+    lists: createEmptyPurposeLists(),
   };
-  const add = () => onChange([...items, ""]);
-  const remove = (i: number) => onChange(items.filter((_, idx) => idx !== i));
 
-  return (
-    <div className="wp-list-editor">
-      <div className="wp-field-label">
-        {label}
-        <span className="wp-field-hint">{hint}</span>
-      </div>
-      {items.map((item, i) => (
-        <div key={i} className="wp-list-row">
-          <input
-            type="text"
-            value={item}
-            onChange={(e) => update(i, e.target.value)}
-            placeholder={`Item ${i + 1}…`}
-          />
-          <button
-            type="button"
-            className="wp-remove-btn"
-            onClick={() => remove(i)}
-            aria-label="Remove"
-          >
-            ×
-          </button>
-        </div>
-      ))}
-      <button type="button" className="wp-add-btn" onClick={add}>
-        + Add
-      </button>
-    </div>
-  );
+  let currentListKey: PurposeListKey | null = null;
+  let inIdentity = false;
+
+  for (const rawLine of yaml.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    if (trimmed.startsWith("version:")) {
+      const version = Number.parseInt(trimmed.slice("version:".length).trim(), 10);
+      parsed.version = Number.isFinite(version) ? version : null;
+      currentListKey = null;
+      inIdentity = false;
+      continue;
+    }
+
+    if (trimmed.startsWith("updated_at:")) {
+      currentListKey = null;
+      inIdentity = false;
+      continue;
+    }
+
+    if (trimmed === "identity:") {
+      inIdentity = true;
+      currentListKey = null;
+      continue;
+    }
+
+    if (inIdentity && trimmed.startsWith("name:")) {
+      parsed.identity.name = unquoteYamlScalar(trimmed.slice("name:".length));
+      continue;
+    }
+
+    if (inIdentity && trimmed.startsWith("description:")) {
+      parsed.identity.description = unquoteYamlScalar(trimmed.slice("description:".length));
+      continue;
+    }
+
+    const listMatch = trimmed.match(
+      /^(functional_requirements|technical_requirements|security_requirements|constraints|evolution_directives):\s*(\[\])?$/
+    );
+    if (listMatch) {
+      currentListKey = listMatch[1] as PurposeListKey;
+      inIdentity = false;
+      if (listMatch[2] === "[]") {
+        parsed.lists[currentListKey] = [];
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("- ") && currentListKey) {
+      parsed.lists[currentListKey].push(unquoteYamlScalar(trimmed.slice(2)));
+      continue;
+    }
+
+    if (trimmed.endsWith(":")) {
+      currentListKey = null;
+      inIdentity = false;
+    }
+  }
+
+  return parsed;
+}
+
+function validatePurposeYaml(yaml: string): { version: number; error: null } | { version: null; error: string } {
+  const parsed = parsePurposeYaml(yaml);
+
+  if (parsed.version === null || parsed.version < 1) {
+    return { version: null, error: "Purpose block must include a numeric version >= 1." };
+  }
+  if (!parsed.identity.name.trim()) {
+    return { version: null, error: "Purpose block must define identity.name." };
+  }
+  if (!parsed.identity.description.trim()) {
+    return { version: null, error: "Purpose block must define identity.description." };
+  }
+  if (!parsed.lists.functional_requirements.some((item) => item.trim())) {
+    return { version: null, error: "Purpose block must include at least one functional requirement." };
+  }
+
+  return { version: parsed.version, error: null };
 }
 
 export function WelcomePurpose({ onSaved }: WelcomePurposeProps) {
   const [step, setStep] = useState<"welcome" | "form">("welcome");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [fields, setFields] = useState<PurposeFields>({
-    name: "",
-    description: "",
-    functional: [""],
-    technical: [""],
-    security: [""],
-    constraints: [""],
-    directives: [""],
-  });
-
-  const set = (key: keyof PurposeFields, val: string | string[]) =>
-    setFields((f) => ({ ...f, [key]: val }));
+  const [purposeYaml, setPurposeYaml] = useState(() => buildPurposeTemplate());
+  const validation = validatePurposeYaml(purposeYaml);
 
   const handleSave = async () => {
-    if (!fields.name.trim() || !fields.description.trim()) {
-      setError("Name and description are required.");
+    if (validation.error) {
+      setError(validation.error);
       return;
     }
+
     setSaving(true);
     setError(null);
     try {
-      const token = getAuthToken();
-      const yaml = buildPurposeYaml(fields);
-      const res = await fetch("/api/v1/evolution/purpose", {
+      const yaml = `${purposeYaml.trimEnd()}\n`;
+      const res = await fetchWithAuth("/api/v1/evolution/purpose", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ version: 1, content_yaml: yaml }),
+        body: JSON.stringify({ version: validation.version, content_yaml: yaml }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || `HTTP ${res.status}`);
+        throw new Error(
+          res.status === 401
+            ? "Session expired. Sign in again."
+            : body.detail || `HTTP ${res.status}`,
+        );
       }
       onSaved();
     } catch (e) {
@@ -149,17 +193,12 @@ export function WelcomePurpose({ onSaved }: WelcomePurposeProps) {
     }
   };
 
-  const canSave =
-    fields.name.trim() &&
-    fields.description.trim() &&
-    fields.functional.some((s) => s.trim());
-
   return (
     <AppWindow
       title={step === "welcome" ? "Welcome to Self-Evolving Software" : "Define Your Purpose"}
       onClose={() => {}}
-      width="660px"
-      height="580px"
+      width="720px"
+      height="620px"
     >
       {step === "welcome" ? (
         <div className="wp-welcome">
@@ -221,65 +260,32 @@ export function WelcomePurpose({ onSaved }: WelcomePurposeProps) {
           </div>
 
           <button className="wp-cta" onClick={() => setStep("form")}>
-            Define Purpose →
+            Edit Purpose Block →
           </button>
         </div>
       ) : (
         <div className="wp-form">
           <p className="wp-form-intro">
-            Fill in as much as you can. You can always refine it later with an Inception.
+            Edit the full YAML block exactly as it will be stored in the database.
           </p>
 
           <div className="wp-field">
-            <label>System name <span className="wp-required">*</span></label>
-            <input
-              type="text"
-              value={fields.name}
-              onChange={(e) => set("name", e.target.value)}
-              placeholder="e.g. My SaaS Platform"
-            />
-          </div>
-
-          <div className="wp-field">
-            <label>Description <span className="wp-required">*</span></label>
+            <label>Purpose YAML <span className="wp-required">*</span></label>
+            <p className="wp-field-help">
+              This block is stored verbatim as <code>content_yaml</code>. The UI only
+              validates the minimum required structure before saving.
+            </p>
             <textarea
-              value={fields.description}
-              onChange={(e) => set("description", e.target.value)}
-              rows={2}
-              placeholder="What does this system do and who is it for?"
+              className="wp-purpose-editor"
+              value={purposeYaml}
+              onChange={(e) => {
+                setPurposeYaml(e.target.value);
+                if (error) setError(null);
+              }}
+              rows={18}
+              spellCheck={false}
             />
           </div>
-
-          <ListEditor
-            label="Functional Requirements"
-            hint="What must the system do?"
-            items={fields.functional}
-            onChange={(v) => set("functional", v)}
-          />
-          <ListEditor
-            label="Technical Requirements"
-            hint="Tech stack, performance, scalability…"
-            items={fields.technical}
-            onChange={(v) => set("technical", v)}
-          />
-          <ListEditor
-            label="Security Requirements"
-            hint="Auth, encryption, compliance…"
-            items={fields.security}
-            onChange={(v) => set("security", v)}
-          />
-          <ListEditor
-            label="Constraints"
-            hint="Budget, deadlines, stack limitations…"
-            items={fields.constraints}
-            onChange={(v) => set("constraints", v)}
-          />
-          <ListEditor
-            label="Evolution Directives"
-            hint="How should the engine prioritize when evolving?"
-            items={fields.directives}
-            onChange={(v) => set("directives", v)}
-          />
 
           {error && <div className="wp-error">{error}</div>}
 
@@ -291,9 +297,9 @@ export function WelcomePurpose({ onSaved }: WelcomePurposeProps) {
               className="wp-save-btn"
               type="button"
               onClick={handleSave}
-              disabled={saving || !canSave}
+              disabled={saving || validation.error !== null}
             >
-              {saving ? "Saving…" : "Save Purpose"}
+              {saving ? "Saving…" : "Save Purpose Block"}
             </button>
           </div>
         </div>

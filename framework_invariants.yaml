@@ -1,0 +1,34 @@
+version: 1
+updated_at: "2026-03-29T00:00:00Z"
+
+identity:
+  name: "Self-Evolving Software Framework"
+  description: "Framework-level invariants that apply to every instance, independent of the instance-specific Purpose defined later in the UI."
+
+platform_invariants:
+  - "Keep the operational plane and the evolution plane separated, with explicit runtime contracts between them."
+  - "Treat the instance-local evolved codebase as the production source of truth after bootstrap, not the shared framework repository."
+  - "Persist Genesis, Purpose, purpose history, contracts, backlog state, and usage state for each instance."
+  - "Maintain the shared platform shell required for apps, chat, monitoring, settings, notifications, and evolution workflows."
+  - "Protect framework-owned shell files, routes, and contracts unless a change explicitly targets platform infrastructure."
+
+safety_invariants:
+  - "Validate generated changes in a sandbox before deployment and prefer reversible, incremental modifications."
+  - "Keep secrets and credentials out of the repository and out of instance seed files."
+  - "Do not expose control-plane-only behavior as a public product contract unless an operator-defined Purpose explicitly requires it."
+  - "Preserve framework and app runtime contracts so evolutions do not silently break critical routes or payload shapes."
+  - "Avoid destructive data or infrastructure changes unless they are explicitly justified by operator-defined Purpose and validated safely."
+
+operator_invariants:
+  - "A new instance starts without a business Purpose and must receive its first Purpose from the UI."
+  - "When contracts, context, or operator intent are ambiguous, block and notify instead of guessing."
+  - "Persist blocker notifications, backlog state, and evolution history so operators can see why the system is idle or blocked."
+  - "Respect configured autonomy budgets, retry limits, and safety thresholds."
+  - "Prefer operator-visible recovery paths over silent retries when the same blocker repeats."
+
+evolution_invariants:
+  - "Prioritize broken user-visible journeys, runtime regressions, and safety issues before adding new capabilities."
+  - "Improve observability, recoverability, and operator control whenever the system encounters repeated blockers."
+  - "Update runtime contracts whenever a new mounted app, critical endpoint, or payload shape becomes part of the product."
+  - "Favor backward-compatible changes to the live instance unless the active Purpose explicitly authorizes a breaking change."
+  - "Escalate uncertainty through persistent notifications rather than inventing unsupported product behavior."

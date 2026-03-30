@@ -1,6 +1,11 @@
 """Tests for runtime settings resolution and engine budgets."""
 
-from app.system_settings import build_default_system_settings, resolve_runtime_model, resolve_runtime_provider
+from app.system_settings import (
+    build_default_system_settings,
+    repair_legacy_budget_value,
+    resolve_runtime_model,
+    resolve_runtime_provider,
+)
 
 
 def test_resolve_runtime_provider_prefers_scope_specific_value():
@@ -37,3 +42,18 @@ def test_default_settings_include_engine_budget_keys():
         "engine_daily_usage_snapshot",
     ):
         assert key in defaults
+
+
+def test_default_settings_raise_recommended_engine_budgets():
+    defaults = build_default_system_settings()
+
+    assert defaults["engine_daily_llm_calls_limit"][0] == "240"
+    assert defaults["engine_daily_input_tokens_limit"][0] == "1500000"
+    assert defaults["engine_daily_output_tokens_limit"][0] == "250000"
+
+
+def test_repair_legacy_budget_value_only_updates_old_defaults():
+    assert repair_legacy_budget_value("engine_daily_llm_calls_limit", "60") == "240"
+    assert repair_legacy_budget_value("engine_daily_input_tokens_limit", "500000") == "1500000"
+    assert repair_legacy_budget_value("engine_daily_output_tokens_limit", "120000") == "250000"
+    assert repair_legacy_budget_value("engine_daily_llm_calls_limit", "500") == "500"

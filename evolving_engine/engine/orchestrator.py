@@ -8,7 +8,7 @@ Supports two operating modes:
              Generator → VALIDATING → Validator → DEPLOYING → Deployer → COMPLETED
 
 2. CONTINUOUS MODE (run_continuous)
-   Runs an autonomous loop that periodically polls the Managed System via the
+   Runs an autonomous loop that periodically polls the Operational Plane via the
    RuntimeObserver, detects anomalies, converts them into evolution requests,
    and executes the pipeline automatically — without any human trigger.
 
@@ -18,7 +18,7 @@ Both modes share the same agent pipeline. The difference is what initiates it
 and what the request context contains (user text vs observed anomaly).
 
 SELF-MODIFICATION:
-   The engine can evolve both the Managed System (managed_app/) and itself
+   The engine can evolve both the Operational Plane (`managed_app/`) and itself
    (evolving_engine/). When the Leader agent decides that the engine's own code
    needs improvement, the DataManager scans the engine's source instead, and
    the Generator writes changes there. The same Validator and Deployer apply.
@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import structlog
 
 from engine.agents.base import BaseAgent
@@ -54,8 +55,9 @@ from engine.models.backlog import (
     BacklogTaskType,
 )
 from engine.models.evolution import DeploymentResult, EvolutionStatus, EvolutionSource
+from engine.models.framework_invariants import FrameworkInvariants
 from engine.models.genesis import Genesis
-from engine.models.inception import InceptionRequest
+from engine.models.inception import InceptionRequest, InceptionResult
 from engine.models.purpose import Purpose
 from engine.monitor.models import Anomaly, AnomalyType, RuntimeSnapshot
 from engine.monitor.observer import RuntimeObserver
@@ -63,12 +65,22 @@ from engine.providers.anthropic_provider import AnthropicProvider
 from engine.providers.base import BaseLLMProvider
 from engine.providers.bedrock_provider import BedrockProvider
 from engine.providers.openai_provider import OpenAIProvider
+from engine.providers.resilient_provider import ResilientLLMProvider
 from engine.repo.scanner import build_repo_map, canonicalize_frontend_app_key
+from engine.runtime_contracts import (
+    get_core_framework_probes,
+    get_platform_file_contracts,
+    get_runtime_contract_probes,
+    validate_runtime_contract_response,
+)
 from engine.sandbox.base import BaseSandbox
 from engine.sandbox.docker_sandbox import DockerSandbox
 from engine.usage_tracker import UsageTracker
 
 logger = structlog.get_logger()
+_PURPOSE_REQUIRED_ERROR = (
+    "Purpose is not defined. Define a Purpose via the desktop before running the evolving engine."
+)
 
 # How many anomaly-driven evolutions can run concurrently (prevent storm)
 _MAX_CONCURRENT_EVOLUTIONS = 1
@@ -100,6 +112,16 @@ _TRANSIENT_BACKLOG_ERROR_PATTERNS = (
     re.compile(r"control[_ -]?plane .* unavailable", re.IGNORECASE),
     re.compile(r"network", re.IGNORECASE),
 )
+_RECOVERABLE_CONTRACT_BLOCK_PATTERNS = (
+    re.compile(r"runtime contract smoke checks failed", re.IGNORECASE),
+    re.compile(r"smoke[- ]check failure", re.IGNORECASE),
+    re.compile(r"runtime contract probe failed", re.IGNORECASE),
+    re.compile(r"mounted app contract probe failed", re.IGNORECASE),
+    re.compile(r"platform contract violation", re.IGNORECASE),
+    re.compile(r"missing required markers", re.IGNORECASE),
+    re.compile(r"contract .* healthy", re.IGNORECASE),
+)
+_INCEPTION_FAILURE_SUMMARY_LIMIT = 400
 
 
 def _frontend_entry_key(app_name: str) -> str:
@@ -151,6 +173,9 @@ class Orchestrator:
         # Genesis — the immutable initial state of the system
         self.genesis = self._load_genesis()
 
+        # Framework invariants — shared platform/safety rules for every instance
+        self.framework_invariants = self._load_framework_invariants()
+
         # Purpose — the guiding specification for all evolution decisions
         self.purpose = self._load_purpose()
 
@@ -162,6 +187,7 @@ class Orchestrator:
         self.leader = LeaderAgent(
             provider=self.provider,
             purpose=self.purpose,
+            framework_invariants=self.framework_invariants,
             config=self.config,
         )
         self.data_manager = DataManagerAgent(
@@ -177,6 +203,8 @@ class Orchestrator:
         # Runtime observer (Monitor phase)
         self.observer = RuntimeObserver(
             base_url=self.config.monitor_url,
+            operational_plane_path=self.config.operational_plane_path,
+            runtime_contracts_path=self.config.runtime_contracts_path,
             error_rate_threshold=self.config.monitor_error_rate_threshold,
             latency_threshold_ms=self.config.monitor_latency_threshold_ms,
             db_latency_threshold_ms=self.config.monitor_db_latency_threshold_ms,
@@ -186,6 +214,7 @@ class Orchestrator:
         self.purpose_evolver = PurposeEvolver(
             provider=self.provider,
             config=self.config,
+            framework_invariants=self.framework_invariants,
         )
 
         # Semaphore — prevents concurrent evolution storms
@@ -210,11 +239,29 @@ class Orchestrator:
 
     def _build_provider(self) -> BaseLLMProvider:
         """Instantiate the configured LLM provider."""
+        has_api_key_fallback = bool(
+            self.config.anthropic_api_key.strip() or self.config.openai_api_key.strip()
+        )
+        if self.config.llm_provider == "bedrock" and has_api_key_fallback:
+            return ResilientLLMProvider(self.config)
         if self.config.llm_provider == "bedrock":
             return BedrockProvider(self.config)
         if self.config.llm_provider == "openai":
             return OpenAIProvider(self.config)
         return AnthropicProvider(self.config)
+
+    async def _record_proactive_attempt(
+        self,
+        *,
+        success: bool,
+        task_key: str | None = None,
+    ) -> None:
+        """Persist proactive activity even when the run fails before code generation."""
+        self.usage_tracker.record_proactive_run(
+            success=success,
+            task_key=task_key,
+        )
+        await self._publish_usage_snapshot()
 
     def _current_llm_signature(self) -> tuple[str, str, str, str]:
         """Return the settings that materially affect provider selection."""
@@ -426,6 +473,23 @@ class Orchestrator:
                 return False, reason, snapshot
         return True, None, snapshot
 
+    async def _post_blocker_notification(
+        self,
+        message: str,
+        *,
+        severity: str = "high",
+    ) -> None:
+        """Best-effort surfacing of severe engine blockers to the desktop."""
+        try:
+            await self.event_reporter.post_notification(
+                message=message,
+                severity=severity,
+                kind="evolution_blocker",
+                source="engine",
+            )
+        except Exception as exc:
+            logger.debug("notifications.post_failed", error=str(exc))
+
     # -----------------------------------------------------------------------
     # Public API — Triggered mode
     # -----------------------------------------------------------------------
@@ -454,6 +518,28 @@ class Orchestrator:
             source=source,
             runtime_snapshot=runtime_snapshot,
         )
+
+        if not await self._ensure_active_purpose():
+            logger.warning(
+                "pipeline.blocked_no_purpose",
+                request_id=ctx.request_id,
+                source=ctx.request.source.value,
+            )
+            await self._post_blocker_notification(
+                (
+                    "Evolution is blocked because no Purpose is defined. "
+                    "Define a Purpose from the desktop UI so the engine can plan and execute work."
+                ),
+                severity="high",
+            )
+            ctx = ctx.fail(_PURPOSE_REQUIRED_ERROR).add_event(
+                "orchestrator",
+                "purpose_gate",
+                "failed",
+                _PURPOSE_REQUIRED_ERROR,
+            )
+            await self.event_reporter.post_event(ctx)
+            return ctx
 
         return await self._execute_context(ctx)
 
@@ -498,7 +584,7 @@ class Orchestrator:
         The loop:
           1. FETCH PURPOSE — load latest Purpose from backend API (admin-defined)
           2. PROCESS INCEPTIONS — apply pending Purpose modifications
-          3. MONITOR  — observe the Managed System via the control-plane
+          3. MONITOR  — observe the Operational Plane via the control-plane
           4. ANALYZE  — detect anomalies in the snapshot
           5. PLAN     — convert anomalies into evolution requests (reactive)
           6. PROACTIVE ANALYZE — compare Purpose vs codebase, find gaps
@@ -514,10 +600,7 @@ class Orchestrator:
         interval = self.config.monitor_interval_seconds
 
         # Fetch Purpose from backend API (admin defined it via UI)
-        if not self.purpose:
-            self.purpose = await self._fetch_purpose_from_api()
-            if self.purpose:
-                self.leader.purpose = self.purpose
+        await self._ensure_active_purpose()
 
         logger.info(
             "continuous_loop.start",
@@ -539,7 +622,29 @@ class Orchestrator:
                         "control_plane.unavailable",
                         retry_seconds=min(interval, _CONTROL_PLANE_RETRY_SECONDS),
                     )
+                    await self._post_blocker_notification(
+                        (
+                            "Evolution is blocked because the control plane backend is unavailable. "
+                            "The engine cannot read runtime state or persist progress until the backend responds again."
+                        ),
+                        severity="critical",
+                    )
                     await asyncio.sleep(min(interval, _CONTROL_PLANE_RETRY_SECONDS))
+                    continue
+
+                if not await self._ensure_active_purpose():
+                    logger.info(
+                        "purpose.waiting_for_definition",
+                        retry_seconds=interval,
+                    )
+                    await self._post_blocker_notification(
+                        (
+                            "Evolution is blocked because no Purpose is defined. "
+                            "Define a Purpose from the desktop UI so the engine can resume autonomous work."
+                        ),
+                        severity="high",
+                    )
+                    await asyncio.sleep(interval)
                     continue
 
                 if self.purpose and not self._purpose_synced:
@@ -557,17 +662,6 @@ class Orchestrator:
 
                 # Process pending Inceptions before monitoring
                 await self._process_pending_inceptions()
-
-                # Refresh Purpose from API if we don't have one yet
-                if not self.purpose:
-                    self.purpose = await self._fetch_purpose_from_api()
-                    if self.purpose:
-                        self.leader.purpose = self.purpose
-                        logger.info(
-                            "purpose.loaded_from_api",
-                            version=self.purpose.version,
-                            identity=self.purpose.identity.name,
-                        )
 
                 # Reactive monitoring (anomalies → fix bugs)
                 await self._mape_k_iteration()
@@ -677,6 +771,13 @@ class Orchestrator:
 
         if not snapshot.reachable:
             logger.warning("mape_k.monitor.unreachable — skipping this iteration")
+            await self._post_blocker_notification(
+                (
+                    "Evolution monitoring is blocked because the operational plane is unreachable. "
+                    "Reactive fixes are paused until runtime health probes succeed again."
+                ),
+                severity="critical",
+            )
             return
 
         # ── ANALYZE ──────────────────────────────────────────────────────────
@@ -762,7 +863,7 @@ class Orchestrator:
 
         templates: dict[AnomalyType, str] = {
             AnomalyType.HIGH_ERROR_RATE: (
-                f"The Managed System has a {snapshot.global_error_rate:.1%} error rate "
+                f"The Operational Plane has a {snapshot.global_error_rate:.1%} error rate "
                 f"(threshold: {self.config.monitor_error_rate_threshold:.0%}). "
                 f"There have been {snapshot.total_errors} errors out of "
                 f"{snapshot.total_requests} requests."
@@ -785,7 +886,7 @@ class Orchestrator:
                 f"or schema migration issues."
             ),
             AnomalyType.SERVICE_UNREACHABLE: (
-                f"A Managed System service is unreachable or crashed: {anomaly.description}. "
+                f"An Operational Plane service is unreachable or crashed: {anomaly.description}. "
                 f"Evidence: {anomaly.evidence}. "
                 f"Investigate the startup failure — check dependencies, environment variables, "
                 f"and recent changes that may have introduced the regression."
@@ -794,6 +895,12 @@ class Orchestrator:
                 f"A recurring exception has been detected at runtime: {anomaly.description}. "
                 f"Evidence: {anomaly.evidence}. "
                 f"Find the root cause in the backend code and implement a fix with a test."
+            ),
+            AnomalyType.MISSING_ENDPOINT: (
+                f"A runtime contract is broken at runtime: {anomaly.description}. "
+                f"Evidence: {anomaly.evidence}. "
+                f"Restore the expected backend route or method, return a valid empty-state "
+                f"response if data is not ready yet, and add a regression test or smoke check."
             ),
             AnomalyType.SCHEMA_DRIFT: (
                 f"The database schema changed unexpectedly: {anomaly.description}. "
@@ -817,6 +924,10 @@ class Orchestrator:
         async with self._evolution_semaphore:
             budget_ok, budget_reason, snapshot = self._proactive_budget_status()
             if not budget_ok:
+                # Treat budget exhaustion as a completed proactive attempt so the
+                # continuous loop waits for the next interval instead of retrying
+                # every minute with the same exhausted snapshot.
+                self._last_proactive_run = time.time()
                 logger.warning(
                     "proactive.safe_mode_budget_exhausted",
                     reason=budget_reason,
@@ -826,6 +937,16 @@ class Orchestrator:
                     proactive_runs=snapshot.get("proactive_runs", 0),
                     failed_evolutions=snapshot.get("failed_evolutions", 0),
                 )
+                await self._post_blocker_notification(
+                    (
+                        "Evolution is blocked by the proactive safety budget. "
+                        f"The limit `{budget_reason}` is exhausted for the current UTC day "
+                        f"(llm_calls={snapshot.get('llm_calls', 0)}, "
+                        f"proactive_runs={snapshot.get('proactive_runs', 0)}, "
+                        f"failed_evolutions={snapshot.get('failed_evolutions', 0)})."
+                    ),
+                    severity="high",
+                )
                 await self._publish_usage_snapshot()
                 return True
 
@@ -834,22 +955,46 @@ class Orchestrator:
 
             if not await self.event_reporter.is_backend_available():
                 logger.warning("proactive.control_plane_unavailable")
+                await self._post_blocker_notification(
+                    (
+                        "Evolution is blocked because the control plane backend is unavailable. "
+                        "The engine cannot load apps, backlog state, or persist progress."
+                    ),
+                    severity="critical",
+                )
+                await self._record_proactive_attempt(success=False)
                 return False
 
             # Build a codebase summary by scanning the evolved (deployed) code
             try:
                 scan_path = self.config.evolved_app_path
                 if not scan_path.exists():
-                    scan_path = self.config.managed_app_path
+                    scan_path = self.config.operational_plane_path
                 codebase_summary = await self._build_codebase_summary(scan_path)
             except Exception as exc:
                 logger.warning("proactive.scan_error", error=str(exc))
+                await self._post_blocker_notification(
+                    (
+                        "Evolution is blocked because the engine could not scan the deployed codebase: "
+                        f"{exc}"
+                    ),
+                    severity="critical",
+                )
+                await self._record_proactive_attempt(success=False)
                 return False
 
             # Fetch existing apps to understand what has already been planned/built
             apps_summary, apps_available, _app_count = await self._fetch_apps_summary()
             if not apps_available:
                 logger.warning("proactive.apps_unavailable")
+                await self._post_blocker_notification(
+                    (
+                        "Evolution is blocked because the apps registry response is invalid or unavailable. "
+                        "The engine cannot determine which apps already exist, so it cannot safely plan the next task."
+                    ),
+                    severity="critical",
+                )
+                await self._record_proactive_attempt(success=False)
                 return False
 
             existing_backlog = await self.event_reporter.fetch_backlog(
@@ -858,9 +1003,21 @@ class Orchestrator:
             )
             if existing_backlog is None:
                 logger.warning("proactive.backlog_unavailable")
+                await self._post_blocker_notification(
+                    (
+                        "Evolution is blocked because the persisted backlog is unavailable. "
+                        "The engine cannot decide the next task without the current roadmap state."
+                    ),
+                    severity="critical",
+                )
+                await self._record_proactive_attempt(success=False)
                 return False
 
-            if await self._recover_stale_backlog_items(existing_backlog):
+            backlog_recovered = await self._recover_stale_backlog_items(existing_backlog)
+            if await self._recover_resolved_blocked_backlog_items(existing_backlog):
+                backlog_recovered = True
+
+            if backlog_recovered:
                 refreshed_backlog = await self.event_reporter.fetch_backlog(
                     purpose_version=self.purpose.version,
                     include_completed=True,
@@ -891,6 +1048,7 @@ class Orchestrator:
                 )
                 if plan is None:
                     logger.warning("proactive.backlog_plan_failed")
+                    await self._record_proactive_attempt(success=False)
                     return False
 
                 synced_backlog = await self.event_reporter.sync_backlog(
@@ -899,6 +1057,14 @@ class Orchestrator:
                 )
                 if synced_backlog is None:
                     logger.warning("proactive.backlog_sync_failed")
+                    await self._post_blocker_notification(
+                        (
+                            "Evolution is blocked because the updated backlog could not be persisted. "
+                            "The engine refuses to execute work it cannot checkpoint safely."
+                        ),
+                        severity="critical",
+                    )
+                    await self._record_proactive_attempt(success=False)
                     return False
                 backlog_items = synced_backlog
                 self._last_backlog_hash = current_hash
@@ -918,11 +1084,20 @@ class Orchestrator:
                 if non_terminal_count == 0:
                     logger.info("proactive.backlog_complete", purpose_version=self.purpose.version)
                 elif backlog_probe.blocked_frontier_item is not None:
+                    blocked_item = backlog_probe.blocked_frontier_item
                     logger.info(
                         "proactive.backlog_stalled",
                         purpose_version=self.purpose.version,
-                        task_key=backlog_probe.blocked_frontier_item.task_key,
-                        status=backlog_probe.blocked_frontier_item.status.value,
+                        task_key=blocked_item.task_key,
+                        status=blocked_item.status.value,
+                    )
+                    await self._post_blocker_notification(
+                        (
+                            "Evolution is blocked because the proactive backlog is stalled at "
+                            f"`{blocked_item.task_key}` ({blocked_item.status.value}). "
+                            f"Reason: {blocked_item.blocked_reason or blocked_item.last_error or 'no reason recorded'}."
+                        ),
+                        severity="high",
                     )
                 else:
                     logger.info(
@@ -930,6 +1105,7 @@ class Orchestrator:
                         purpose_version=self.purpose.version,
                         non_terminal_count=non_terminal_count,
                     )
+                await self._record_proactive_attempt(success=True)
                 return True
 
             logger.info(
@@ -940,11 +1116,10 @@ class Orchestrator:
                 status=next_item.status.value,
             )
             success = await self._execute_backlog_item(next_item)
-            self.usage_tracker.record_proactive_run(
+            await self._record_proactive_attempt(
                 success=success,
                 task_key=next_item.task_key,
             )
-            await self._publish_usage_snapshot()
             if success:
                 self._last_backlog_hash = ""
             return success
@@ -998,7 +1173,7 @@ set of tasks that can be executed across multiple autonomous runs.
   exact path it reports for an app; never invent a sibling root that differs only by case,
   camelCase, spacing, or hyphenation.
 - Use a stable slug of the desktop app name as the frontend module key, for example
-  `Competitive Intelligence` -> `competitive-intelligence`.
+  `Example App` -> `example-app`.
 - If the repository map reports a path conflict for an app module root, plan a consolidation
   or stabilization slice before deepening that app further.
 - Do not replace the shell itself when planning or executing product-app work.
@@ -1042,6 +1217,13 @@ set of tasks that can be executed across multiple autonomous runs.
             )
         except Exception as exc:
             logger.warning("proactive.backlog_planner_error", error=str(exc))
+            await self._post_blocker_notification(
+                (
+                    "Evolution is blocked because proactive backlog planning failed: "
+                    f"{exc}"
+                ),
+                severity="critical",
+            )
             return None
 
     def _format_backlog_for_prompt(self, items: list[BacklogItem]) -> str:
@@ -1449,6 +1631,128 @@ set of tasks that can be executed across multiple autonomous runs.
 
         return recovered
 
+    def _is_recoverable_contract_block(self, item: BacklogItem) -> bool:
+        """Return whether a blocked task is waiting on contracts we can re-probe live."""
+        if item.status != BacklogTaskStatus.BLOCKED:
+            return False
+
+        evidence = "\n".join(
+            part for part in (item.blocked_reason, item.last_error) if part
+        )
+        if not evidence:
+            return False
+
+        return any(pattern.search(evidence) for pattern in _RECOVERABLE_CONTRACT_BLOCK_PATTERNS)
+
+    def _platform_contract_recovery_errors(self) -> list[str]:
+        """Return platform contract marker failures that still make blocked work unsafe."""
+        app_path = Path(self.config.evolved_app_path)
+        errors: list[str] = []
+
+        for contract in get_platform_file_contracts(self.config.runtime_contracts_path):
+            trigger_path = app_path / contract.trigger
+            if not trigger_path.exists():
+                continue
+
+            required_file = app_path / contract.required_file
+            if not required_file.exists():
+                errors.append(
+                    f"{contract.required_file} missing for {contract.description}"
+                )
+                continue
+
+            try:
+                content = required_file.read_text(encoding="utf-8")
+            except OSError as exc:
+                errors.append(f"{contract.required_file} unreadable: {exc}")
+                continue
+
+            missing_markers = [
+                marker for marker in contract.markers if marker not in content
+            ]
+            if missing_markers:
+                preview = ", ".join(missing_markers[:4])
+                errors.append(
+                    f"{contract.required_file} missing required markers: {preview}"
+                )
+
+        return errors
+
+    async def _runtime_contract_recovery_errors(self) -> list[str]:
+        """Return runtime contract probe failures that still make blocked work unsafe."""
+        probes = list(get_core_framework_probes())
+        probes.extend(
+            get_runtime_contract_probes(
+                Path(self.config.evolved_app_path),
+                self.config.runtime_contracts_path,
+            )
+        )
+        if not probes:
+            return []
+
+        base_url = self.config.monitor_url.rstrip("/")
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        errors: list[str] = []
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for probe in probes:
+                try:
+                    response = await client.request(
+                        probe.method,
+                        f"{base_url}{probe.path}",
+                        json=probe.json_body,
+                    )
+                except Exception as exc:
+                    errors.append(f"{probe.method} {probe.path} -> {exc}")
+                    continue
+
+                contract_error = validate_runtime_contract_response(probe, response)
+                if contract_error is not None:
+                    errors.append(f"{probe.method} {probe.path} -> {contract_error}")
+
+        return errors
+
+    async def _recover_resolved_blocked_backlog_items(self, items: list[BacklogItem]) -> bool:
+        """Re-open contract-blocked tasks once live probes show the blocker is gone."""
+        candidates = [
+            item for item in items if self._is_recoverable_contract_block(item)
+        ]
+        if not candidates:
+            return False
+
+        platform_errors = self._platform_contract_recovery_errors()
+        runtime_errors = await self._runtime_contract_recovery_errors()
+        if platform_errors or runtime_errors:
+            logger.info(
+                "proactive.backlog_block_recovery_waiting",
+                candidate_count=len(candidates),
+                platform_error_count=len(platform_errors),
+                runtime_error_count=len(runtime_errors),
+            )
+            return False
+
+        recovered = False
+        for item in candidates:
+            await self.event_reporter.update_backlog_item(
+                item.id,
+                {
+                    "status": BacklogTaskStatus.PENDING.value,
+                    "failure_streak": 0,
+                    "blocked_reason": None,
+                    "retry_after": None,
+                    "started_at": None,
+                    "completed_at": None,
+                },
+            )
+            logger.info(
+                "proactive.backlog_block_recovered",
+                item_id=item.id,
+                task_key=item.task_key,
+            )
+            recovered = True
+
+        return recovered
+
     async def _fetch_apps_summary(self) -> tuple[str, bool, int]:
         """Fetch the list of existing apps from the backend for the proactive analyzer."""
         try:
@@ -1459,7 +1763,15 @@ set of tasks that can be executed across multiple autonomous runs.
                 return "(No apps created yet)", True, 0
 
             lines = []
+            valid_apps = 0
             for app in apps:
+                if not isinstance(app, dict):
+                    logger.warning(
+                        "proactive.fetch_apps_invalid_item",
+                        item_type=type(app).__name__,
+                    )
+                    continue
+                valid_apps += 1
                 feat_count = app.get("feature_count", 0)
                 cap_count = app.get("capability_count", 0)
                 lines.append(
@@ -1467,9 +1779,11 @@ set of tasks that can be executed across multiple autonomous runs.
                     f"[{app.get('status', '?')}] — {app.get('goal', 'no goal')} "
                     f"({feat_count} features, {cap_count} capabilities)"
                 )
+            if valid_apps == 0:
+                return "(Apps unavailable — apps payload was invalid)", False, 0
             lines.append("")
             lines.append("There is already at least one registered business app. Do not treat the system as app-less.")
-            return "\n".join(lines), True, len(apps)
+            return "\n".join(lines), True, valid_apps
         except Exception as exc:
             logger.debug("proactive.fetch_apps_error", error=str(exc))
             return "(Apps unavailable — backend API did not respond)", False, 0
@@ -1546,9 +1860,19 @@ set of tasks that can be executed across multiple autonomous runs.
                 directive=inception.directive[:100],
             )
 
-            new_purpose, result = await self.purpose_evolver.evolve(
-                self.purpose, inception
-            )
+            try:
+                new_purpose, result = await self.purpose_evolver.evolve(
+                    self.purpose, inception
+                )
+            except Exception as exc:
+                logger.exception(
+                    "inception.processing_failed",
+                    inception_id=inception.id,
+                    error=str(exc),
+                )
+                result = self._build_failed_inception_result(inception, exc)
+                await self._report_failed_inception(inception, result)
+                continue
 
             accepted = new_purpose.version > self.purpose.version
 
@@ -1578,6 +1902,52 @@ set of tasks that can be executed across multiple autonomous runs.
                     reason=result.changes_summary[:200],
                 )
 
+    def _build_failed_inception_result(
+        self,
+        inception: InceptionRequest,
+        exc: Exception,
+    ) -> InceptionResult:
+        """Convert an unexpected inception exception into a persisted rejection."""
+        current_version = self.purpose.version if self.purpose else 0
+        summary = f"Processing failed: {type(exc).__name__}: {exc}".strip()
+        if len(summary) > _INCEPTION_FAILURE_SUMMARY_LIMIT:
+            summary = summary[: _INCEPTION_FAILURE_SUMMARY_LIMIT - 3] + "..."
+
+        return InceptionResult(
+            inception_id=inception.id,
+            previous_purpose_version=current_version,
+            new_purpose_version=current_version,
+            changes_summary=summary,
+        )
+
+    async def _report_failed_inception(
+        self,
+        inception: InceptionRequest,
+        result: InceptionResult,
+    ) -> None:
+        """Best-effort persistence and surfacing for unexpected inception failures."""
+        try:
+            await self.event_reporter.report_inception_result(
+                inception.id,
+                result,
+                accepted=False,
+            )
+        except Exception as report_exc:
+            logger.exception(
+                "inception.failure_report_failed",
+                inception_id=inception.id,
+                error=str(report_exc),
+            )
+            return
+
+        await self._post_blocker_notification(
+            (
+                "An Inception could not be processed automatically and was rejected. "
+                f"Inception {inception.id}: {result.changes_summary}"
+            ),
+            severity="high",
+        )
+
     # -----------------------------------------------------------------------
     # Internal — Genesis & Purpose loading
     # -----------------------------------------------------------------------
@@ -1599,10 +1969,33 @@ set of tasks that can be executed across multiple autonomous runs.
             logger.warning("genesis.load_error", error=str(exc))
             return None
 
+    def _load_framework_invariants(self) -> FrameworkInvariants | None:
+        """Load shared framework invariants from disk."""
+        try:
+            invariants = FrameworkInvariants.load(self.config.framework_invariants_path)
+            logger.info(
+                "framework_invariants.loaded",
+                version=invariants.version,
+                identity=invariants.identity.name,
+            )
+            return invariants
+        except FileNotFoundError:
+            logger.warning(
+                "framework_invariants.not_found",
+                path=str(self.config.framework_invariants_path),
+            )
+            return None
+        except Exception as exc:
+            logger.warning("framework_invariants.load_error", error=str(exc))
+            return None
+
     def _load_purpose(self) -> Purpose | None:
         """Load the current Purpose from disk. Returns None if not found."""
         try:
-            purpose = Purpose.load(self.config.purpose_path)
+            purpose = Purpose.load_optional(self.config.purpose_path)
+            if purpose is None:
+                logger.info("purpose.empty", path=str(self.config.purpose_path))
+                return None
             logger.info(
                 "purpose.loaded",
                 version=purpose.version,
@@ -1626,6 +2019,33 @@ set of tasks that can be executed across multiple autonomous runs.
             return purpose
         # Fallback to local file
         return self._load_purpose()
+
+    async def _ensure_active_purpose(self) -> bool:
+        """Load Purpose if needed and tell the caller whether evolution may proceed."""
+        if self.purpose is not None:
+            return True
+
+        purpose = await self._fetch_purpose_from_api()
+        if purpose is None:
+            return False
+
+        try:
+            purpose.save(self.config.purpose_path)
+        except Exception as exc:
+            logger.warning(
+                "purpose.local_persist_failed",
+                path=str(self.config.purpose_path),
+                error=str(exc),
+            )
+
+        self.purpose = purpose
+        self.leader.purpose = purpose
+        logger.info(
+            "purpose.loaded_from_api",
+            version=purpose.version,
+            identity=purpose.identity.name,
+        )
+        return True
 
     # -----------------------------------------------------------------------
     # Internal — lesson extraction

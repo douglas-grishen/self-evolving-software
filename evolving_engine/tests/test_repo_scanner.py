@@ -31,8 +31,8 @@ def test_extract_alembic_revisions_reads_revision_chain(tmp_path):
 
 def test_canonicalize_frontend_app_key_slugifies_camel_case():
     """Frontend module names should resolve to a stable desktop slug."""
-    assert canonicalize_frontend_app_key("CompetitiveIntelligence") == "competitive-intelligence"
-    assert canonicalize_frontend_app_key("Competitive Intelligence") == "competitive-intelligence"
+    assert canonicalize_frontend_app_key("ExampleApp") == "example-app"
+    assert canonicalize_frontend_app_key("Example App") == "example-app"
 
 
 def test_extract_frontend_app_modules_detects_case_conflicts(tmp_path):

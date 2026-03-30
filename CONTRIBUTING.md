@@ -81,17 +81,26 @@ PRs that add new features should also include:
 
 ## Development Workflow
 
-> Detailed setup instructions will be added as the project matures.
+Use Python 3.11+ for every Python-facing command in this repository. The
+preferred entrypoint is `bash scripts/run-python.sh`, which will fail fast if
+your active interpreter is too old. `make setup` bootstraps `./.venv` first,
+and subsequent Python commands prefer that virtual environment automatically.
 
 ```bash
-# Install dependencies (update command as project evolves)
-# ...
+# Install dependencies
+PYTHON=/path/to/python3.11 make setup
 
 # Run tests
-# ...
+PYTHON=/path/to/python3.11 make test
+
+# Run deploy/infrastructure flow tests only
+PYTHON=/path/to/python3.11 make test-infra
+
+# Validate deploy inputs before creating a new instance
+PYTHON=/path/to/python3.11 make preflight-instance
 
 # Lint and format
-# ...
+PYTHON=/path/to/python3.11 make lint
 ```
 
 ---

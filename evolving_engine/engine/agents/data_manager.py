@@ -1,7 +1,7 @@
 """Data Manager Agent — scans the repository and builds a structural map.
 
 Responsibilities (MAPE-K: Analyze):
-- Walk the managed_app/ filesystem
+- Walk the Operational Plane filesystem
 - Build a token-efficient RepoMap (JSON) containing:
   - Directory tree
   - API endpoints
@@ -20,7 +20,7 @@ from engine.repo.scanner import build_repo_map
 
 
 class DataManagerAgent(BaseAgent):
-    """Scans the managed application and produces a RepoMap.
+    """Scans the Operational Plane codebase and produces a RepoMap.
 
     Also fetches inter-session lessons from the backend memory store so downstream
     agents (especially CodeGeneratorAgent) can avoid repeating past mistakes.
@@ -28,12 +28,17 @@ class DataManagerAgent(BaseAgent):
 
     def __init__(
         self,
+        operational_plane_path: Path | None = None,
         managed_app_path: Path | None = None,
         event_reporter=None,  # EventReporter | None
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.managed_app_path = managed_app_path or self.config.managed_app_path
+        self.operational_plane_path = (
+            operational_plane_path
+            or managed_app_path
+            or self.config.operational_plane_path
+        )
         self.event_reporter = event_reporter
 
     @property
@@ -45,14 +50,14 @@ class DataManagerAgent(BaseAgent):
         evolved_app_path = Path(self.config.evolved_app_path).resolve()
         if (evolved_app_path / "frontend").exists() and (evolved_app_path / "backend").exists():
             return evolved_app_path
-        return Path(self.managed_app_path).resolve()
+        return Path(self.operational_plane_path).resolve()
 
     async def _execute(self, ctx: EvolutionContext) -> EvolutionContext:
         """Scan the repository and attach the RepoMap + lessons to the context."""
         app_path = self._resolve_app_path()
 
         if not app_path.exists():
-            return ctx.fail(f"Managed app path does not exist: {app_path}")
+            return ctx.fail(f"Operational Plane path does not exist: {app_path}")
 
         repo_map = build_repo_map(app_path)
 

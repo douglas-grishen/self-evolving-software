@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -12,8 +13,15 @@ class EngineSettings(BaseSettings):
     # Scope — what the engine can observe and modify
     # ---------------------------------------------------------------------------
 
-    # Path to the Managed System's source code (read for scanning, write for changes)
-    managed_app_path: Path = Path("../managed_app")
+    # Path to the Operational Plane source code (read for scanning, write for changes).
+    # Accept the legacy ENGINE_MANAGED_APP_PATH env var during migration.
+    operational_plane_path: Path = Field(
+        default=Path("../managed_app"),
+        validation_alias=AliasChoices(
+            "ENGINE_OPERATIONAL_PLANE_PATH",
+            "ENGINE_MANAGED_APP_PATH",
+        ),
+    )
 
     # Path to the engine's own source code — enables self-modification
     self_path: Path = Path(".")
@@ -24,11 +32,17 @@ class EngineSettings(BaseSettings):
     # Genesis — immutable initial state snapshot
     genesis_path: Path = Path("../genesis.yaml")
 
-    # Purpose — the guiding specification for evolution decisions
+    # Framework invariants — shared non-negotiable platform rules
+    framework_invariants_path: Path = Path("../framework_invariants.yaml")
+
+    # Purpose — the instance-specific guiding specification for evolution decisions
     purpose_path: Path = Path("../purpose.yaml")
 
     # Purpose history — archived versions after Inception modifications
     purpose_history_path: Path = Path("../purpose_history")
+
+    # Runtime contract probes for mounted desktop apps
+    runtime_contracts_path: Path | None = None
 
     # Scratch space for staging generated files before validation
     workspace_path: Path = Path("/tmp/evolving_engine_workspace")
@@ -44,10 +58,10 @@ class EngineSettings(BaseSettings):
     # Runtime monitoring (Monitor phase — "M" in MAPE-K)
     # ---------------------------------------------------------------------------
 
-    # Base URL of the Managed System's backend API (via control-plane network)
+    # Base URL of the Operational Plane backend API (via control-plane network)
     monitor_url: str = "http://localhost:8000"
 
-    # How often the engine polls the Managed System in autonomous mode (seconds)
+    # How often the engine polls the Operational Plane in autonomous mode (seconds)
     monitor_interval_seconds: int = 60
 
     # Anomaly thresholds
@@ -89,9 +103,9 @@ class EngineSettings(BaseSettings):
     # Autonomy guardrails (UTC daily budgets)
     # ---------------------------------------------------------------------------
 
-    daily_llm_calls_limit: int = 60
-    daily_input_tokens_limit: int = 500_000
-    daily_output_tokens_limit: int = 120_000
+    daily_llm_calls_limit: int = 240
+    daily_input_tokens_limit: int = 1_500_000
+    daily_output_tokens_limit: int = 250_000
     daily_proactive_runs_limit: int = 24
     daily_failed_evolutions_limit: int = 10
     daily_task_attempt_limit: int = 3
@@ -101,10 +115,10 @@ class EngineSettings(BaseSettings):
     # ---------------------------------------------------------------------------
 
     # Path to the evolved application code (local git repo, never pushed)
-    # This is separate from managed_app_path (the read-only template from GitHub).
+    # This is separate from operational_plane_path (the read-only template from GitHub).
     evolved_app_path: Path = Path("/opt/evolved-app")
 
-    # Docker compose file used to rebuild managed system services after evolution
+    # Docker compose file used to rebuild Operational Plane services after evolution
     compose_file: str = "docker-compose.prod.yml"
 
     # Root of the framework deployment (where compose file lives)
@@ -123,6 +137,19 @@ class EngineSettings(BaseSettings):
     log_level: str = "INFO"
 
     model_config = {"env_prefix": "ENGINE_", "env_file": ".env", "extra": "ignore"}
+
+    @field_validator("runtime_contracts_path", mode="before")
+    @classmethod
+    def _empty_runtime_contracts_path_is_none(cls, value: object) -> object:
+        """Treat empty optional env vars as unset instead of `Path('.')`."""
+        if value in ("", None):
+            return None
+        return value
+
+    @property
+    def managed_app_path(self) -> Path:
+        """Backward-compatible alias while the codebase migrates to plane terminology."""
+        return self.operational_plane_path
 
 
 settings = EngineSettings()

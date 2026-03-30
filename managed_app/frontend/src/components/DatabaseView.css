@@ -88,11 +88,72 @@
   flex-direction: column;
   flex: 1;
   overflow: hidden;
+  background: #f7f7f7;
+}
+
+.database-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.database-section:first-child {
+  flex: 0 0 42%;
+}
+
+.database-rows-section {
+  flex: 1;
+  border-top: 1px solid #e0e0e0;
+}
+
+.database-panel-header-split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.database-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.database-page-button {
+  padding: 6px 10px;
+  border: 1px solid #cfcfcf;
+  border-radius: 4px;
+  background: white;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.database-page-button:hover:not(:disabled) {
+  background: #f5f5f5;
+  border-color: #bdbdbd;
+}
+
+.database-page-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.database-page-indicator {
+  font-size: 12px;
+  color: #555;
 }
 
 .database-columns-list {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
+  padding: 16px;
+}
+
+.database-rows-list {
+  flex: 1;
+  overflow: auto;
   padding: 16px;
 }
 
@@ -144,6 +205,18 @@
   border-right: none;
 }
 
+.database-rows-table th code,
+.database-row-cell code {
+  font-size: 11px;
+}
+
+.database-row-cell {
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .column-name code {
   background: #f0f0f0;
   padding: 2px 4px;
@@ -174,24 +247,34 @@
   color: #6f42c1;
 }
 
+.database-null {
+  color: #999;
+  font-style: italic;
+}
+
 /* Scrollbar */
 .database-tables-list::-webkit-scrollbar,
-.database-columns-list::-webkit-scrollbar {
+.database-columns-list::-webkit-scrollbar,
+.database-rows-list::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 .database-tables-list::-webkit-scrollbar-track,
-.database-columns-list::-webkit-scrollbar-track {
+.database-columns-list::-webkit-scrollbar-track,
+.database-rows-list::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .database-tables-list::-webkit-scrollbar-thumb,
-.database-columns-list::-webkit-scrollbar-thumb {
+.database-columns-list::-webkit-scrollbar-thumb,
+.database-rows-list::-webkit-scrollbar-thumb {
   background: #ccc;
   border-radius: 4px;
 }
 
 .database-tables-list::-webkit-scrollbar-thumb:hover,
-.database-columns-list::-webkit-scrollbar-thumb:hover {
+.database-columns-list::-webkit-scrollbar-thumb:hover,
+.database-rows-list::-webkit-scrollbar-thumb:hover {
   background: #999;
 }

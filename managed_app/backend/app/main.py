@@ -35,7 +35,7 @@ app = FastAPI(
 # MetricsMiddleware must wrap the full request so it captures all latencies/errors
 app.add_middleware(MetricsMiddleware)
 
-# CORS — restricts browser origins for the Managed System's public API
+# CORS — restricts browser origins for the Operational Plane public API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,

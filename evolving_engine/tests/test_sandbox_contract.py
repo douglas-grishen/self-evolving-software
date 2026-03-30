@@ -166,10 +166,63 @@ def test_contract_allows_desktop_shell_change_when_request_is_explicit():
     assert errors == []
 
 
+def test_contract_rejects_backend_shell_overwrite():
+    """Product work must not overwrite the FastAPI bootstrap entrypoint."""
+    ctx = create_context("Add filters to company search")
+    ctx = ctx.model_copy(
+        update={
+            "plan": EvolutionPlan(
+                summary="Rewrite backend entrypoint",
+                changes=[
+                    FileChange(
+                        file_path="backend/app/main.py",
+                        action="modify",
+                        description="Swap startup bootstrap",
+                        layer="backend",
+                    ),
+                ],
+                requires_migration=False,
+                risk_level="high",
+                reasoning="Would change backend shell bootstrap",
+            ),
+            "generated_files": [
+                GeneratedFile(
+                    file_path="backend/app/main.py",
+                    content="from fastapi import FastAPI\napp = FastAPI()\n",
+                    action="modify",
+                    layer="backend",
+                )
+            ],
+        }
+    )
+
+    errors = _validate_plan_contract(ctx)
+
+    assert any("Backend shell files are protected" in error for error in errors)
+
+
 def _write(tmp_path: Path, relative_path: str, content: str) -> None:
     target = tmp_path / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+
+
+def _write_example_app_contracts(tmp_path: Path) -> Path:
+    contracts_path = tmp_path / "contracts.yaml"
+    contracts_path.write_text(
+        """
+apps:
+  example-app:
+    platform_contract:
+      required_file: backend/app/api/v1/example_app.py
+      markers:
+        - 'APIRouter(prefix="/example-app"'
+        - '@router.get("/summary")'
+        - '@router.post("/items/search")'
+""".strip(),
+        encoding="utf-8",
+    )
+    return contracts_path
 
 
 def test_platform_contract_rejects_missing_system_capabilities(tmp_path: Path):
@@ -210,8 +263,9 @@ def test_platform_contract_rejects_missing_system_capabilities(tmp_path: Path):
     assert any("JSON.stringify({ messages: history })" in error for error in errors)
 
 
-def test_platform_contract_requires_backend_contract_for_mounted_competitive_intelligence(tmp_path: Path):
+def test_platform_contract_requires_backend_contract_for_mounted_example_app(tmp_path: Path):
     """Mounted apps must keep their framework-owned backend contract alive."""
+    contracts_path = _write_example_app_contracts(tmp_path)
     _write(
         tmp_path,
         "frontend/src/App.tsx",
@@ -259,13 +313,17 @@ def test_platform_contract_requires_backend_contract_for_mounted_competitive_int
     )
     _write(
         tmp_path,
-        "frontend/src/apps/competitive-intelligence/index.tsx",
-        "export default function CompetitiveIntelligence() { return null; }",
+        "frontend/src/apps/example-app/index.tsx",
+        "export default function ExampleApp() { return null; }",
     )
 
-    errors = _validate_platform_contract_files(tmp_path, "Build competitive intelligence search")
+    errors = _validate_platform_contract_files(
+        tmp_path,
+        "Build example app search",
+        contracts_path,
+    )
 
-    assert any("competitive_intelligence.py" in error for error in errors)
+    assert any("example_app.py" in error for error in errors)
 
 
 def test_platform_contract_allows_explicit_shell_redesign(tmp_path: Path):
@@ -295,6 +353,11 @@ def test_platform_contract_allows_explicit_shell_redesign(tmp_path: Path):
         "backend/app/api/v1/chat.py",
         'from fastapi import APIRouter\nrouter = APIRouter(prefix="/chat")\nclass ChatMessage: ...\nmessages: list[ChatMessage]\n@router.post("")\nasync def chat(): pass\n',
     )
+    _write(
+        tmp_path,
+        "backend/app/main.py",
+        'from app.api.v1 import v1_router\napp.include_router(v1_router)\n@app.get("/health")\nasync def root_health():\n    return {"status": "ok"}\n',
+    )
 
     errors = _validate_platform_contract_files(tmp_path, "Redesign desktop shell and window manager")
 
@@ -305,17 +368,17 @@ def test_frontend_app_structure_rejects_noncanonical_module_root(tmp_path: Path)
     """Sandbox should reject CamelCase sibling roots when the slugged root exists."""
     _write(
         tmp_path,
-        "frontend/src/apps/competitive-intelligence/index.tsx",
-        "export default function CompetitiveIntelligence() { return null; }",
+        "frontend/src/apps/example-app/index.tsx",
+        "export default function ExampleApp() { return null; }",
     )
-    ctx = create_context("Improve competitive intelligence timeline")
+    ctx = create_context("Improve example app timeline")
     ctx = ctx.model_copy(
         update={
             "plan": EvolutionPlan(
                 summary="Add timeline view",
                 changes=[
                     FileChange(
-                        file_path="frontend/src/apps/CompetitiveIntelligence/Timeline.tsx",
+                        file_path="frontend/src/apps/ExampleApp/Timeline.tsx",
                         action="create",
                         description="Add timeline surface",
                         layer="frontend",
@@ -327,7 +390,7 @@ def test_frontend_app_structure_rejects_noncanonical_module_root(tmp_path: Path)
             ),
             "generated_files": [
                 GeneratedFile(
-                    file_path="frontend/src/apps/CompetitiveIntelligence/Timeline.tsx",
+                    file_path="frontend/src/apps/ExampleApp/Timeline.tsx",
                     content="export function Timeline() { return null; }",
                     action="create",
                     layer="frontend",
@@ -339,7 +402,7 @@ def test_frontend_app_structure_rejects_noncanonical_module_root(tmp_path: Path)
     errors = _validate_frontend_app_structure(tmp_path, ctx)
 
     assert any("canonical desktop slugs" in error for error in errors)
-    assert any("frontend/src/apps/competitive-intelligence/" in error for error in errors)
+    assert any("frontend/src/apps/example-app/" in error for error in errors)
 
 
 def test_frontend_app_structure_detects_duplicate_module_roots(tmp_path: Path):
