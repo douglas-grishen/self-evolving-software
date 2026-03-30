@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import inspect, insert, select, update
+from sqlalchemy import insert, inspect, select, update
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -158,11 +158,17 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
         ),
         LEGACY_LLM_PROVIDER_KEY: (
             provider,
-            "Legacy shared LLM provider fallback. New installs should prefer chat_llm_provider and engine_llm_provider.",
+            (
+                "Legacy shared LLM provider fallback. New installs should prefer "
+                "chat_llm_provider and engine_llm_provider."
+            ),
         ),
         LEGACY_LLM_MODEL_KEY: (
             default_model,
-            "Legacy shared model fallback. New installs should prefer chat_llm_model and engine_llm_model.",
+            (
+                "Legacy shared model fallback. New installs should prefer "
+                "chat_llm_model and engine_llm_model."
+            ),
         ),
         CHAT_LLM_PROVIDER_KEY: (
             provider,
@@ -194,11 +200,17 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
         ),
         ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: (
             default_budget_value("ENGINE_DAILY_INPUT_TOKENS_LIMIT", 1500000),
-            "UTC daily limit for self-evolution input tokens before proactive work enters safe mode.",
+            (
+                "UTC daily limit for self-evolution input tokens before proactive "
+                "work enters safe mode."
+            ),
         ),
         ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: (
             default_budget_value("ENGINE_DAILY_OUTPUT_TOKENS_LIMIT", 250000),
-            "UTC daily limit for self-evolution output tokens before proactive work enters safe mode.",
+            (
+                "UTC daily limit for self-evolution output tokens before proactive "
+                "work enters safe mode."
+            ),
         ),
         ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY: (
             default_budget_value("ENGINE_DAILY_PROACTIVE_RUNS_LIMIT", 24),
@@ -210,7 +222,10 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
         ),
         ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY: (
             default_budget_value("ENGINE_DAILY_TASK_ATTEMPT_LIMIT", 3),
-            "UTC daily cap for how many times the engine may start the same backlog task before moving on.",
+            (
+                "UTC daily cap for how many times the engine may start the same "
+                "backlog task before moving on."
+            ),
         ),
         ENGINE_DAILY_USAGE_SNAPSHOT_KEY: (
             "{}",
@@ -227,7 +242,7 @@ def mask_setting_value(key: str, value: str) -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _get_system_setting_columns(db: AsyncSession) -> set[str]:
@@ -319,7 +334,9 @@ async def ensure_default_system_settings(db: AsyncSession) -> None:
                     value = legacy_model
                 else:
                     scoped_provider_fallback = defaults[
-                        CHAT_LLM_PROVIDER_KEY if key == CHAT_LLM_MODEL_KEY else ENGINE_LLM_PROVIDER_KEY
+                        CHAT_LLM_PROVIDER_KEY
+                        if key == CHAT_LLM_MODEL_KEY
+                        else ENGINE_LLM_PROVIDER_KEY
                     ][0]
                     scoped_provider = resolve_runtime_provider(
                         existing_values,
@@ -354,9 +371,17 @@ async def ensure_default_system_settings(db: AsyncSession) -> None:
         if key in ENGINE_BUDGET_SETTING_KEYS:
             env_key = ENGINE_BUDGET_ENV_VARS.get(key)
             if env_key and os.environ.get(env_key) is None:
-                repaired_value = repair_legacy_budget_value(key, record.value)
-                if repaired_value != record.value:
-                    record.value = repaired_value
+                current_value = record.get("value") or ""
+                repaired_value = repair_legacy_budget_value(key, current_value)
+                if repaired_value != current_value:
+                    update_values: dict[str, object] = {"value": repaired_value}
+                    if "updated_at" in available_columns:
+                        update_values["updated_at"] = _utcnow()
+                    await db.execute(
+                        update(SystemSetting.__table__)
+                        .where(SystemSetting.__table__.c.key == key)
+                        .values(**update_values)
+                    )
                     existing_values[key] = repaired_value
                     changed = True
 

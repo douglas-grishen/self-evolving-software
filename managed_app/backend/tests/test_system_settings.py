@@ -133,3 +133,47 @@ async def test_ensure_default_system_settings_skips_when_table_missing():
 
     assert db.executed is False
     assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_system_settings_repairs_legacy_budget_rows_without_orm_objects():
+    """Legacy budget values should be updated even when startup loads rows as mappings."""
+    executed = []
+
+    class _Row:
+        def __init__(self, mapping):
+            self._mapping = mapping
+
+    class _Result:
+        def all(self):
+            return [_Row({"key": "engine_daily_llm_calls_limit", "value": "60"})]
+
+    class _Connection:
+        async def run_sync(self, fn):
+            return {"key", "value", "updated_at"}
+
+    class _DB:
+        committed = False
+
+        async def connection(self):
+            return _Connection()
+
+        async def execute(self, statement):
+            executed.append(statement)
+            if len(executed) == 1:
+                return _Result()
+            return object()
+
+        async def commit(self):
+            self.committed = True
+
+    db = _DB()
+    await ensure_default_system_settings(db)
+
+    update_statements = [
+        statement for statement in executed[1:] if statement.__class__.__name__ == "Update"
+    ]
+    assert update_statements
+    compiled_params = update_statements[0].compile().params
+    assert compiled_params["value"] == "240"
+    assert db.committed is True
