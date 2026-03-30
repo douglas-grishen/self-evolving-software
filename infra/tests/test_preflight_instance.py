@@ -74,6 +74,7 @@ def test_preflight_rejects_legacy_purpose_seed_checkout(tmp_path):
     (tmp_path / "infra").mkdir()
     (tmp_path / "infra" / "stacks").mkdir()
     (tmp_path / "evolving_engine" / "engine").mkdir(parents=True)
+    (tmp_path / "appspec.yml").write_text("version: 0.0\nfiles:\n  - source: /\n    destination: /opt/self-evolving-software\n")
     (tmp_path / "docker-compose.prod.yml").write_text("services:\n  engine:\n    environment:\n      ENGINE_PURPOSE_SEED_PATH: /workspace/purpose.yaml\n")
     (tmp_path / "evolving_engine" / "engine" / "config.py").write_text("purpose_seed_path = 'legacy'\n")
     (tmp_path / "infra" / "stacks" / "ec2_stack.py").write_text(
@@ -98,6 +99,7 @@ def test_preflight_rejects_legacy_purpose_seed_checkout(tmp_path):
     assert "legacy_purpose_seed_present" in error_codes
     assert "legacy_purpose_seed_env" in error_codes
     assert "legacy_purpose_seed_config" in error_codes
+    assert "legacy_appspec_destination" in error_codes
     assert "bootstrap_clones_github_source" in error_codes
     assert "bootstrap_starts_services_early" in error_codes
 

@@ -122,6 +122,7 @@ def _normalize_github_slug(remote_url: str) -> str | None:
 
 def _validate_repo_checkout(repo_root: Path) -> list[Finding]:
     findings: list[Finding] = []
+    appspec_text = _safe_read_text(repo_root / "appspec.yml")
     docker_compose_text = _safe_read_text(repo_root / "docker-compose.prod.yml")
     engine_config_text = _safe_read_text(repo_root / "evolving_engine" / "engine" / "config.py")
     ec2_stack_text = _safe_read_text(repo_root / "infra" / "stacks" / "ec2_stack.py")
@@ -147,6 +148,14 @@ def _validate_repo_checkout(repo_root: Path) -> list[Finding]:
             _error(
                 "legacy_purpose_seed_config",
                 "The engine config still supports purpose_seed_path. New instances must not seed Purpose from the repository.",
+            )
+        )
+
+    if "destination: /opt/self-evolving-software\n" in appspec_text:
+        findings.append(
+            _error(
+                "legacy_appspec_destination",
+                "appspec.yml still deploys the bundle directly into the framework root. CodeDeploy must stage into /opt/self-evolving-software-release so the install hook can promote the selected source safely.",
             )
         )
 
