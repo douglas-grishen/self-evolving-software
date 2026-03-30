@@ -1,6 +1,6 @@
 """Tests for lesson persistence helpers in EventReporter."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -20,7 +20,7 @@ def _lesson(
     active: bool = True,
     times_reinforced: int = 2,
 ) -> EngineMemory:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return EngineMemory(
         id=lesson_id,
         category=category,
@@ -127,3 +127,27 @@ async def test_is_backend_available_uses_canonical_health_contract(monkeypatch):
     monkeypatch.setattr(event_reporter_module.httpx, "AsyncClient", client_factory)
 
     assert await reporter.is_backend_available() is True
+
+
+def test_normalize_apps_payload_accepts_list_shape():
+    payload = [{"id": "app-1", "name": "Delegate Setup"}]
+
+    normalized = EventReporter._normalize_apps_payload(payload)
+
+    assert normalized == payload
+
+
+def test_normalize_apps_payload_accepts_legacy_wrapped_shape():
+    payload = {"apps": [{"id": "app-1", "name": "Delegate Setup"}]}
+
+    normalized = EventReporter._normalize_apps_payload(payload)
+
+    assert normalized == payload["apps"]
+
+
+def test_normalize_apps_payload_skips_invalid_items():
+    payload = {"apps": ["broken-entry", {"id": "app-1", "name": "Delegate Setup"}]}
+
+    normalized = EventReporter._normalize_apps_payload(payload)
+
+    assert normalized == [{"id": "app-1", "name": "Delegate Setup"}]

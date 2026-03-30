@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 const API_BASE = "/api/v1/auth";
 const TOKEN_KEY = "ses_admin_token";
 const USER_KEY = "ses_admin_user";
+const AUTH_INVALIDATED_EVENT = "ses:auth-invalidated";
 
 export interface AdminUser {
   id: string;
@@ -22,40 +23,140 @@ export interface AuthState {
   logout: () => void;
 }
 
+interface AuthInvalidationDetail {
+  message?: string;
+}
+
+function readStoredUser(): AdminUser | null {
+  const stored = localStorage.getItem(USER_KEY);
+  if (!stored) return null;
+
+  try {
+    return JSON.parse(stored) as AdminUser;
+  } catch {
+    localStorage.removeItem(USER_KEY);
+    return null;
+  }
+}
+
+function clearStoredAuth() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+export function invalidateAuthSession(message?: string) {
+  clearStoredAuth();
+  window.dispatchEvent(
+    new CustomEvent<AuthInvalidationDetail>(AUTH_INVALIDATED_EVENT, {
+      detail: message ? { message } : {},
+    }),
+  );
+}
+
+export async function fetchWithAuth(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = getAuthToken();
+
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(input, { ...init, headers });
+
+  if (response.status === 401) {
+    invalidateAuthSession("Session expired. Sign in again.");
+  }
+
+  return response;
+}
+
 export function useAuth(): AuthState {
   const [token, setToken] = useState<string | null>(() =>
     localStorage.getItem(TOKEN_KEY)
   );
-  const [user, setUser] = useState<AdminUser | null>(() => {
-    const stored = localStorage.getItem(USER_KEY);
-    return stored ? JSON.parse(stored) : null;
-  });
-  const [isLoading, setIsLoading] = useState(false);
+  const [user, setUser] = useState<AdminUser | null>(() => readStoredUser());
+  const [isLoading, setIsLoading] = useState(() => !!localStorage.getItem(TOKEN_KEY));
   const [error, setError] = useState<string | null>(null);
+  const validatedTokenRef = useRef<string | null>(null);
 
-  // Validate token on mount
   useEffect(() => {
-    if (token && !user) {
-      fetch(`${API_BASE}/me`, {
+    const handleInvalidated = (event: Event) => {
+      const detail =
+        event instanceof CustomEvent
+          ? (event as CustomEvent<AuthInvalidationDetail>).detail
+          : undefined;
+      validatedTokenRef.current = null;
+      setToken(null);
+      setUser(null);
+      setIsLoading(false);
+      setError(detail?.message ?? null);
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== TOKEN_KEY && event.key !== USER_KEY) {
+        return;
+      }
+      validatedTokenRef.current = null;
+      setToken(localStorage.getItem(TOKEN_KEY));
+      setUser(readStoredUser());
+    };
+
+    window.addEventListener(AUTH_INVALIDATED_EVENT, handleInvalidated as EventListener);
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.removeEventListener(AUTH_INVALIDATED_EVENT, handleInvalidated as EventListener);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      validatedTokenRef.current = null;
+      setUser(null);
+      setIsLoading(false);
+      return;
+    }
+
+    if (validatedTokenRef.current === token) {
+      setIsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setIsLoading(true);
+
+    fetch(`${API_BASE}/me`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((res) => {
-          if (!res.ok) throw new Error("Token expired");
+          if (!res.ok) throw new Error("Session expired. Sign in again.");
           return res.json();
         })
         .then((data: AdminUser) => {
+          if (!active) return;
+          validatedTokenRef.current = token;
           setUser(data);
           localStorage.setItem(USER_KEY, JSON.stringify(data));
+          setError(null);
         })
         .catch(() => {
-          // Token invalid, clear everything
-          setToken(null);
-          setUser(null);
-          localStorage.removeItem(TOKEN_KEY);
-          localStorage.removeItem(USER_KEY);
+          if (!active) return;
+          invalidateAuthSession("Session expired. Sign in again.");
+        })
+        .finally(() => {
+          if (active) {
+            setIsLoading(false);
+          }
         });
-    }
-  }, [token, user]);
+
+    return () => {
+      active = false;
+    };
+  }, [token]);
 
   const login = useCallback(
     async (username: string, password: string): Promise<boolean> => {
@@ -76,14 +177,20 @@ export function useAuth(): AuthState {
         localStorage.setItem(TOKEN_KEY, access_token);
         setToken(access_token);
 
-        // Fetch user info
+        // Fetch user info immediately so the desktop can render without waiting
+        // for the background token validation pass.
         const meRes = await fetch(`${API_BASE}/me`, {
           headers: { Authorization: `Bearer ${access_token}` },
         });
         if (meRes.ok) {
           const userData: AdminUser = await meRes.json();
+          validatedTokenRef.current = access_token;
           setUser(userData);
           localStorage.setItem(USER_KEY, JSON.stringify(userData));
+        } else {
+          invalidateAuthSession("Session expired. Sign in again.");
+          setError("Session expired. Sign in again.");
+          return false;
         }
         return true;
       } catch {
@@ -97,10 +204,8 @@ export function useAuth(): AuthState {
   );
 
   const logout = useCallback(() => {
-    setToken(null);
-    setUser(null);
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    setError(null);
+    invalidateAuthSession();
   }, []);
 
   return {

@@ -202,9 +202,29 @@ body {
   transition: all 0.15s;
 }
 
+.menubar-item--with-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .menubar-item:hover {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
+}
+
+.menubar-item-badge {
+  min-width: 18px;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239, 68, 68, 0.18);
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .menubar-user {
@@ -538,6 +558,219 @@ body {
   line-height: 1.4;
 }
 
+/* ===========================================================================
+   Evolution Real Time (inside window)
+   =========================================================================== */
+
+.realtime-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.realtime-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.realtime-stat {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.realtime-stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.realtime-stat-value {
+  display: flex;
+  align-items: center;
+}
+
+.realtime-stat-number {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+.realtime-primary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.realtime-panel {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.realtime-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.realtime-panel-header h4 {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d1d5db;
+  margin: 0;
+}
+
+.realtime-panel-meta {
+  font-size: 0.72rem;
+  color: #666;
+}
+
+.realtime-summary {
+  font-size: 0.84rem;
+  color: #d1d5db;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.realtime-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.realtime-meta-item {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.realtime-meta-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.realtime-meta-value {
+  font-size: 0.8rem;
+  color: #e5e7eb;
+}
+
+.realtime-request-id {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: #d1d5db;
+}
+
+.realtime-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.78rem;
+}
+
+.realtime-inline-row code {
+  font-family: "SF Mono", ui-monospace, monospace;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #d1d5db;
+}
+
+.realtime-inline-row--stacked {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.realtime-empty-state {
+  text-align: left;
+  padding: 1rem 0 0.25rem;
+}
+
+.realtime-steps-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.realtime-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.realtime-change-card {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.realtime-change-topline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.realtime-change-action {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-weight: 700;
+}
+
+.realtime-change-action--create {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.realtime-change-action--modify {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.realtime-change-action--delete {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.realtime-change-path {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #e5e7eb;
+}
+
+.realtime-change-layer {
+  font-size: 0.68rem;
+  color: #9ca3af;
+  margin-left: auto;
+}
+
+.realtime-change-description {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: #9ca3af;
+  line-height: 1.45;
+}
+
 .timeline-detail {
   margin-top: 8px;
   padding-top: 8px;
@@ -687,6 +920,12 @@ body {
   margin-bottom: 12px;
 }
 
+.inception-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .inception-form label {
   display: block;
   font-size: 0.78rem;
@@ -736,8 +975,49 @@ body {
   cursor: not-allowed;
 }
 
+.inception-cancel-btn {
+  background: transparent !important;
+  color: #999 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+.inception-cancel-btn:hover:not(:disabled) {
+  color: #e0e0e0 !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
 .inception-list-container {
   width: 100%;
+}
+
+.inception-toolbar {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.inception-new-btn {
+  background: #ffffff;
+  color: #0a0a0a;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 600;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.inception-new-btn:hover {
+  background: #d4d4d4;
+}
+
+.inception-compose-card {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
 }
 
 .inception-list {
@@ -1081,6 +1361,18 @@ body {
   font-weight: 500;
 }
 
+.wp-field-help {
+  font-size: 0.74rem;
+  color: #777;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.wp-field-help code {
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .wp-required {
   color: #ef4444;
   margin-left: 2px;
@@ -1112,6 +1404,13 @@ body {
 
 .wp-field textarea {
   resize: vertical;
+}
+
+.wp-purpose-editor {
+  min-height: 360px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.55;
+  white-space: pre;
 }
 
 /* List editor */

@@ -47,6 +47,18 @@ export interface AppFull {
   metadata_json: Record<string, unknown> | null;
 }
 
+function normalizeAppsPayload(payload: unknown): AppBrief[] {
+  if (Array.isArray(payload)) return payload as AppBrief[];
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { apps?: unknown[] }).apps)
+  ) {
+    return (payload as { apps: AppBrief[] }).apps;
+  }
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
@@ -60,7 +72,7 @@ export function useApps(intervalMs = 10000) {
     try {
       const res = await fetch("/api/v1/apps");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: AppBrief[] = await res.json();
+      const data = normalizeAppsPayload(await res.json());
       setApps(data);
       setError(null);
     } catch (err) {

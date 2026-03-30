@@ -48,6 +48,24 @@ ENGINE_BUDGET_SETTING_KEYS = {
     ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT_KEY,
     ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY,
 }
+LEGACY_ENGINE_BUDGET_DEFAULTS = {
+    ENGINE_DAILY_LLM_CALLS_LIMIT_KEY: 60,
+    ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: 500_000,
+    ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: 120_000,
+}
+RECOMMENDED_ENGINE_BUDGET_DEFAULTS = {
+    ENGINE_DAILY_LLM_CALLS_LIMIT_KEY: 240,
+    ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: 1_500_000,
+    ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: 250_000,
+}
+ENGINE_BUDGET_ENV_VARS = {
+    ENGINE_DAILY_LLM_CALLS_LIMIT_KEY: "ENGINE_DAILY_LLM_CALLS_LIMIT",
+    ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: "ENGINE_DAILY_INPUT_TOKENS_LIMIT",
+    ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: "ENGINE_DAILY_OUTPUT_TOKENS_LIMIT",
+    ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY: "ENGINE_DAILY_PROACTIVE_RUNS_LIMIT",
+    ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT_KEY: "ENGINE_DAILY_FAILED_EVOLUTIONS_LIMIT",
+    ENGINE_DAILY_TASK_ATTEMPT_LIMIT_KEY: "ENGINE_DAILY_TASK_ATTEMPT_LIMIT",
+}
 EDITABLE_SETTING_KEYS = {
     "proactive_interval_minutes",
     *PROVIDER_SETTING_KEYS,
@@ -88,6 +106,15 @@ def default_budget_value(env_key: str, fallback: int, *, minimum: int = 1) -> st
     except ValueError:
         value = fallback
     return str(max(minimum, value))
+
+
+def repair_legacy_budget_value(key: str, value: str) -> str:
+    """Raise uncustomized legacy defaults to safer recommended autonomy budgets."""
+    legacy_value = LEGACY_ENGINE_BUDGET_DEFAULTS.get(key)
+    recommended_value = RECOMMENDED_ENGINE_BUDGET_DEFAULTS.get(key)
+    if legacy_value is None or recommended_value is None:
+        return value
+    return str(recommended_value) if value == str(legacy_value) else value
 
 
 def resolve_runtime_provider(
@@ -162,15 +189,15 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
             "Override for the OpenAI API key. Leave blank to use ENGINE_OPENAI_API_KEY.",
         ),
         ENGINE_DAILY_LLM_CALLS_LIMIT_KEY: (
-            default_budget_value("ENGINE_DAILY_LLM_CALLS_LIMIT", 60),
+            default_budget_value("ENGINE_DAILY_LLM_CALLS_LIMIT", 240),
             "UTC daily limit for self-evolution LLM calls before proactive work enters safe mode.",
         ),
         ENGINE_DAILY_INPUT_TOKENS_LIMIT_KEY: (
-            default_budget_value("ENGINE_DAILY_INPUT_TOKENS_LIMIT", 500000),
+            default_budget_value("ENGINE_DAILY_INPUT_TOKENS_LIMIT", 1500000),
             "UTC daily limit for self-evolution input tokens before proactive work enters safe mode.",
         ),
         ENGINE_DAILY_OUTPUT_TOKENS_LIMIT_KEY: (
-            default_budget_value("ENGINE_DAILY_OUTPUT_TOKENS_LIMIT", 120000),
+            default_budget_value("ENGINE_DAILY_OUTPUT_TOKENS_LIMIT", 250000),
             "UTC daily limit for self-evolution output tokens before proactive work enters safe mode.",
         ),
         ENGINE_DAILY_PROACTIVE_RUNS_LIMIT_KEY: (
@@ -324,6 +351,14 @@ async def ensure_default_system_settings(db: AsyncSession) -> None:
                 .values(**update_values)
             )
             changed = True
+        if key in ENGINE_BUDGET_SETTING_KEYS:
+            env_key = ENGINE_BUDGET_ENV_VARS.get(key)
+            if env_key and os.environ.get(env_key) is None:
+                repaired_value = repair_legacy_budget_value(key, record.value)
+                if repaired_value != record.value:
+                    record.value = repaired_value
+                    existing_values[key] = repaired_value
+                    changed = True
 
     if changed:
         await db.commit()

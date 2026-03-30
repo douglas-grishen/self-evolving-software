@@ -1,78 +1,93 @@
 #!/bin/bash
-# CodeDeploy hook: build Docker images after source is copied
-#
-# Two-layer architecture:
-#   /opt/self-evolving-software/   Framework (this repo, from GitHub)
-#   /opt/evolved-app/              Evolved code (local git, never pushed)
-#
-# On first deploy, we bootstrap /opt/evolved-app/ from the managed_app/ template.
-# On subsequent deploys, evolved-app is preserved with all its local evolutions.
-set -e
+# CodeDeploy hook: promote the fetched bundle into the instance-specific
+# framework root, then build Docker images for that instance.
+set -euo pipefail
 
-APP_DIR="/opt/self-evolving-software"
-EVOLVED_DIR="/opt/evolved-app"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/scripts/common.sh
+. "$SCRIPT_DIR/common.sh"
 
-cd "$APP_DIR"
+load_instance_environment
+ensure_framework_env_file
 
-# Ensure .env exists (created by user data on first boot)
-if [ ! -f "$APP_DIR/.env" ] && [ -f /home/ec2-user/.env ]; then
-    cp /home/ec2-user/.env "$APP_DIR/.env"
-fi
+echo "Promoting bundle from $BUNDLE_ROOT to $FRAMEWORK_ROOT..."
+mkdir -p "$FRAMEWORK_ROOT"
+cp -a "$BUNDLE_ROOT"/. "$FRAMEWORK_ROOT"/
 
-# Ensure git is installed on the host (needed for evolved-app local repo)
+cd "$FRAMEWORK_ROOT"
+
+echo "Neutralizing any legacy Purpose seeds from the framework bundle..."
+rm -f "$FRAMEWORK_ROOT/purpose.yaml"
+rm -f "$EVOLVED_APP_ROOT/.engine-state/purpose.yaml"
+
 if ! command -v git &> /dev/null; then
     echo "Installing git..."
     yum install -y git 2>/dev/null || dnf install -y git 2>/dev/null || apt-get install -y git 2>/dev/null
 fi
 
-# ---------------------------------------------------------------------------
-# Bootstrap evolved-app on first deploy
-# ---------------------------------------------------------------------------
-if [ ! -d "$EVOLVED_DIR/.git" ]; then
-    echo "Bootstrapping evolved-app from managed_app template..."
-    mkdir -p "$EVOLVED_DIR"
+if [ ! -d "$EVOLVED_APP_ROOT/.git" ]; then
+    echo "Bootstrapping evolved app for instance '$INSTANCE_KEY'..."
+    mkdir -p "$EVOLVED_APP_ROOT"
+    cp -r "$FRAMEWORK_ROOT/managed_app/backend" "$EVOLVED_APP_ROOT/backend"
+    cp -r "$FRAMEWORK_ROOT/managed_app/frontend" "$EVOLVED_APP_ROOT/frontend"
 
-    # Copy the template app (backend + frontend)
-    cp -r "$APP_DIR/managed_app/backend" "$EVOLVED_DIR/backend"
-    cp -r "$APP_DIR/managed_app/frontend" "$EVOLVED_DIR/frontend"
+    if [ -d "$FRAMEWORK_ROOT/$INSTANCE_OVERLAY_PATH/seed/operational-plane" ]; then
+        cp -a "$FRAMEWORK_ROOT/$INSTANCE_OVERLAY_PATH/seed/operational-plane"/. "$EVOLVED_APP_ROOT"/
+    fi
 
-    # Initialize local git repo (for history + rollback, never pushed)
-    cd "$EVOLVED_DIR"
+    cd "$EVOLVED_APP_ROOT"
     git init
+    git config user.name "Self-Evolving Software"
+    git config user.email "noreply@self-evolving.local"
     git add -A
-    git commit -m "initial: base template from managed_app"
-
-    echo "Evolved-app bootstrapped at $EVOLVED_DIR"
-    cd "$APP_DIR"
+    git commit -m "initial: base template from operational plane"
+    cd "$FRAMEWORK_ROOT"
 else
-    echo "Evolved-app already exists at $EVOLVED_DIR — preserving local evolutions."
+    echo "Evolved app already exists at $EVOLVED_APP_ROOT — preserving local evolutions."
 fi
 
-# ---------------------------------------------------------------------------
-# Build Docker images
-# ---------------------------------------------------------------------------
-# Re-sync framework-owned core API files on every deployment so instance-local
-# drift cannot silently remove required platform routes.
-CORE_FILES_MANIFEST="$APP_DIR/protected_framework_files.txt"
+mkdir -p "$INSTANCE_STATE_ROOT" "$PURPOSE_HISTORY_PATH"
+if [ ! -f "$GENESIS_PATH" ] && [ -f "$GENESIS_SEED_PATH" ]; then
+    echo "Seeding instance genesis from $GENESIS_SEED_PATH..."
+    cp "$GENESIS_SEED_PATH" "$GENESIS_PATH"
+fi
+if [ ! -f "$RUNTIME_CONTRACTS_PATH" ] && [ -f "$RUNTIME_CONTRACTS_SEED_PATH" ]; then
+    echo "Seeding instance runtime contracts from $RUNTIME_CONTRACTS_SEED_PATH..."
+    cp "$RUNTIME_CONTRACTS_SEED_PATH" "$RUNTIME_CONTRACTS_PATH"
+fi
+
+echo "Syncing shared shell manifests into evolved app..."
+CORE_FILES_MANIFEST="$FRAMEWORK_ROOT/protected_framework_files.txt"
 if [ -f "$CORE_FILES_MANIFEST" ]; then
-    echo "Syncing framework-owned core backend files into evolved-app..."
     while IFS= read -r rel_path; do
         [ -z "$rel_path" ] && continue
         case "$rel_path" in
             \#*) continue ;;
         esac
 
-        src="$APP_DIR/managed_app/$rel_path"
-        dst="$EVOLVED_DIR/$rel_path"
+        src="$FRAMEWORK_ROOT/managed_app/$rel_path"
+        dst="$EVOLVED_APP_ROOT/$rel_path"
         if [ ! -f "$src" ]; then
             continue
         fi
 
-        mkdir -p "$(dirname "$dst")"
-        cp "$src" "$dst"
+        install -D -m 0644 "$src" "$dst"
     done < "$CORE_FILES_MANIFEST"
+else
+    install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/app/main.py" \
+      "$EVOLVED_APP_ROOT/backend/app/main.py"
+    install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/app/api/v1/__init__.py" \
+      "$EVOLVED_APP_ROOT/backend/app/api/v1/__init__.py"
 fi
+install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/app/config.py" \
+  "$EVOLVED_APP_ROOT/backend/app/config.py"
+install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/pyproject.toml" \
+  "$EVOLVED_APP_ROOT/backend/pyproject.toml"
+install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/frontend/package.json" \
+  "$EVOLVED_APP_ROOT/frontend/package.json"
+install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/frontend/package-lock.json" \
+  "$EVOLVED_APP_ROOT/frontend/package-lock.json"
 
-echo "Building Docker images..."
-docker compose -f docker-compose.prod.yml build --parallel
+echo "Building Docker images for compose project $COMPOSE_PROJECT..."
+compose_cmd build --parallel
 echo "Build complete."

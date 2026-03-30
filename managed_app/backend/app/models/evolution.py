@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -131,4 +131,34 @@ class EvolutionBacklogItemRecord(Base):
             "purpose_version",
             "sequence",
         ),
+    )
+
+
+class SystemNotificationRecord(Base):
+    """A persistent operational notification shown to the user until acknowledged."""
+
+    __tablename__ = "system_notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(String(20), default="system", index=True)
+    kind: Mapped[str] = mapped_column(String(40), default="runtime_blocker", index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="high", index=True)
+    message: Mapped[str] = mapped_column(Text)
+    message_hash: Mapped[str] = mapped_column(String(64), index=True)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    update_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        Index("ix_system_notifications_updated_at", "updated_at"),
+        Index("ix_system_notifications_hash_updated", "message_hash", "updated_at"),
     )

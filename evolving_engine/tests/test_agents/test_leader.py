@@ -97,12 +97,12 @@ def test_sanitize_plan_normalizes_legacy_frontend_paths():
                                             is_dir=False,
                                         ),
                                         FileNode(
-                                            path="frontend/src/apps/competitive-intelligence",
-                                            name="competitive-intelligence",
+                                            path="frontend/src/apps/example-app",
+                                            name="example-app",
                                             is_dir=True,
                                             children=[
                                                 FileNode(
-                                                    path="frontend/src/apps/competitive-intelligence/index.tsx",
+                                                    path="frontend/src/apps/example-app/index.tsx",
                                                     name="index.tsx",
                                                     is_dir=False,
                                                 )
@@ -129,13 +129,13 @@ def test_sanitize_plan_normalizes_legacy_frontend_paths():
                 layer="frontend",
             ),
             FileChange(
-                file_path="frontend/src/apps/CompetitiveIntelligence/index.tsx",
+                file_path="frontend/src/apps/ExampleApp/index.tsx",
                 action="modify",
                 description="camel-case duplicate",
                 layer="frontend",
             ),
             FileChange(
-                file_path="frontend/src/apps/competitive-intelligence/index.tsx",
+                file_path="frontend/src/apps/example-app/index.tsx",
                 action="modify",
                 description="canonical entry",
                 layer="frontend",
@@ -146,7 +146,7 @@ def test_sanitize_plan_normalizes_legacy_frontend_paths():
     sanitized = _sanitize_plan(plan, repo_map)
     assert [change.file_path for change in sanitized.changes] == [
         "frontend/src/apps/registry.tsx",
-        "frontend/src/apps/competitive-intelligence/index.tsx",
+        "frontend/src/apps/example-app/index.tsx",
     ]
     assert "camel-case duplicate" in sanitized.changes[1].description
     assert "canonical entry" in sanitized.changes[1].description

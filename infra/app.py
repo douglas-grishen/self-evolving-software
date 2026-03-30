@@ -2,9 +2,9 @@
 """CDK App — entrypoint for deploying the Self-Evolving Software infrastructure.
 
 MAPE-K Architecture:
-    The system deploys two isolated subsystems on a single EC2 instance:
-    - Managed System:     web app (React + FastAPI + PostgreSQL)
-    - Autonomic Manager:  AI engine (Leader, DataManager, Generator, Validator)
+    The system deploys two isolated planes on a single EC2 instance:
+    - Operational Plane: web app (React + FastAPI + PostgreSQL)
+    - Evolution Plane:   AI engine (Leader, DataManager, Generator, Validator)
 
 Stack dependency graph:
     NetworkStack           — VPC, subnets, security groups
@@ -22,14 +22,25 @@ Or directly:
 """
 
 import os
+from pathlib import Path
 
 import aws_cdk as cdk
 
+from instance_overlay import load_instance_overlay
 from stacks.ec2_stack import Ec2Stack
 from stacks.network_stack import NetworkStack
 from stacks.pipeline_stack import PipelineStack
 
 app = cdk.App()
+repo_root = Path(__file__).resolve().parents[1]
+instance_key = (
+    app.node.try_get_context("instance_key")
+    or os.environ.get("INSTANCE_KEY")
+    or "base"
+)
+project_name = app.node.try_get_context("project_name") or "self-evolving-software"
+instance_overlay = load_instance_overlay(repo_root, instance_key)
+stack_suffix = "".join(part.capitalize() for part in instance_key.split("-"))
 
 # CDK_DEFAULT_ACCOUNT and CDK_DEFAULT_REGION are automatically populated by the
 # CDK CLI when --profile is passed. They resolve to the account/region configured
@@ -49,23 +60,33 @@ env = cdk.Environment(
 )
 
 # 1. Network foundation (VPC, public subnet, security group)
-network = NetworkStack(app, "NetworkStack", env=env)
-
-# 2. EC2 instance — hosts both Managed System and Autonomic Manager
-ec2_instance = Ec2Stack(
+network = NetworkStack(
     app,
-    "Ec2Stack",
-    vpc=network.vpc,
-    ec2_sg=network.ec2_sg,
+    f"NetworkStack{stack_suffix}",
+    stack_name=f"{project_name}-{instance_key}-network",
     env=env,
 )
 
-# 3. CI/CD Pipeline — deploys both subsystems to EC2 via CodeDeploy
+# 2. EC2 instance — hosts both Operational and Evolution planes
+ec2_instance = Ec2Stack(
+    app,
+    f"Ec2Stack{stack_suffix}",
+    vpc=network.vpc,
+    ec2_sg=network.ec2_sg,
+    instance_overlay=instance_overlay,
+    project_name=project_name,
+    stack_name=f"{project_name}-{instance_key}-compute",
+    env=env,
+)
+
+# 3. CI/CD Pipeline — deploys both planes to EC2 via CodeDeploy
 pipeline = PipelineStack(
     app,
-    "PipelineStack",
+    f"PipelineStack{stack_suffix}",
     codedeploy_app=ec2_instance.codedeploy_app,
     deployment_group=ec2_instance.deployment_group,
+    instance_overlay=instance_overlay,
+    stack_name=f"{project_name}-{instance_key}-pipeline",
     env=env,
 )
 

@@ -289,10 +289,27 @@ class EventReporter:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.get(f"{self.base_url}/api/v1/apps")
                 resp.raise_for_status()
-                return resp.json()
+                return self._normalize_apps_payload(resp.json())
         except Exception as exc:
             logger.debug("event_reporter.fetch_apps_error", error=str(exc))
             return None
+
+    async def post_notification(
+        self,
+        *,
+        message: str,
+        severity: str = "high",
+        kind: str = "runtime_blocker",
+        source: str = "engine",
+    ) -> bool:
+        """Persist a severe runtime notification for the operational desktop."""
+        payload = {
+            "message": message,
+            "severity": severity,
+            "kind": kind,
+            "source": source,
+        }
+        return await self._post(f"{self._evolution_url}/notifications", payload, retries=3)
 
     async def is_backend_available(self) -> bool:
         """Check whether the backend control-plane is currently reachable."""
@@ -601,3 +618,26 @@ class EventReporter:
                 await asyncio.sleep(delay)
 
         return False
+
+    @staticmethod
+    def _normalize_apps_payload(payload: Any) -> list[dict]:
+        """Accept both the canonical list shape and legacy `{apps: [...]}` payloads."""
+        if isinstance(payload, dict):
+            payload = payload.get("apps")
+
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise TypeError(f"Unexpected apps payload type: {type(payload).__name__}")
+
+        normalized: list[dict] = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "event_reporter.fetch_apps_invalid_item",
+                    index=index,
+                    item_type=type(item).__name__,
+                )
+                continue
+            normalized.append(item)
+        return normalized

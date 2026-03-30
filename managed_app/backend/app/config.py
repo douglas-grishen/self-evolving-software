@@ -7,8 +7,8 @@ class Settings(BaseSettings):
     """Backend settings — values are loaded from environment variables or .env file."""
 
     # Application
-    app_name: str = "Managed App"
-    app_version: str = "1.1.0"
+    app_name: str = "Operational Plane"
+    app_version: str = "1.1.4"
     debug: bool = False
     environment: str = "development"
 
@@ -26,6 +26,12 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173"]
+
+    # External notifications
+    notification_webhook_url: str = ""
+    notification_webhook_bearer_token: str = ""
+    notification_webhook_min_severity: str = "critical"
+    notification_webhook_timeout_seconds: float = 5.0
 
     model_config = {"env_prefix": "APP_", "env_file": ".env", "extra": "ignore"}
 

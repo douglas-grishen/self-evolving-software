@@ -1,6 +1,6 @@
-"""Monitoring endpoints — the Autonomic Manager's window into runtime state.
+"""Monitoring endpoints — the Evolution Plane's window into runtime state.
 
-These endpoints expose the Managed System's health, metrics, schema, and logs
+These endpoints expose the Operational Plane's health, metrics, schema, and logs
 so the MAPE-K engine can observe what is happening at runtime and decide
 whether the system needs to evolve.
 

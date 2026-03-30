@@ -2,7 +2,13 @@ import { useState } from "react";
 import { useInceptions, useSubmitInception } from "../../hooks/useEvolutionApi";
 import { StatusBadge } from "./StatusBadge";
 
-function InceptionForm({ onSubmitted }: { onSubmitted: () => void }) {
+function InceptionForm({
+  onSubmitted,
+  onCancel,
+}: {
+  onSubmitted: () => void;
+  onCancel?: () => void;
+}) {
   const [directive, setDirective] = useState("");
   const [rationale, setRationale] = useState("");
   const { submit, submitting, error } = useSubmitInception();
@@ -48,25 +54,68 @@ function InceptionForm({ onSubmitted }: { onSubmitted: () => void }) {
 
       {error && <div className="error-text">Error: {error}</div>}
 
-      <button type="submit" disabled={submitting || !directive.trim()}>
-        {submitting ? "Submitting..." : "Submit Inception"}
-      </button>
+      <div className="inception-form-actions">
+        {onCancel && (
+          <button
+            type="button"
+            className="inception-cancel-btn"
+            onClick={onCancel}
+            disabled={submitting}
+          >
+            Cancel
+          </button>
+        )}
+        <button type="submit" disabled={submitting || !directive.trim()}>
+          {submitting ? "Submitting..." : "Submit Inception"}
+        </button>
+      </div>
     </form>
   );
 }
 
-function InceptionList() {
-  const { inceptions, loading, error, refresh } = useInceptions();
+function InceptionList({
+  inceptions,
+  loading,
+  error,
+  refresh,
+  allowComposerToggle,
+  showComposer,
+  onToggleComposer,
+  onSubmitted,
+}: {
+  inceptions: ReturnType<typeof useInceptions>["inceptions"];
+  loading: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
+  allowComposerToggle: boolean;
+  showComposer: boolean;
+  onToggleComposer: () => void;
+  onSubmitted: () => void;
+}) {
+  const handleSubmitted = () => {
+    onSubmitted();
+  };
 
   return (
     <div className="inception-list-container">
-      <div className="window-toolbar">
+      <div className="window-toolbar inception-toolbar">
+        {allowComposerToggle && (
+          <button className="inception-new-btn" onClick={onToggleComposer}>
+            {showComposer ? "Hide New Inception" : "New Inception"}
+          </button>
+        )}
         <button className="refresh-btn" onClick={refresh} disabled={loading}>
           {loading ? "Loading..." : "Refresh"}
         </button>
       </div>
 
       {error && <div className="error-text">Error: {error}</div>}
+
+      {showComposer && (
+        <div className="inception-compose-card">
+          <InceptionForm onSubmitted={handleSubmitted} onCancel={onToggleComposer} />
+        </div>
+      )}
 
       {inceptions.length === 0 && !loading && (
         <p className="empty-state">No inceptions submitted yet.</p>
@@ -113,20 +162,48 @@ interface InceptionPanelProps {
 }
 
 export function InceptionPanel({ mode = "full" }: InceptionPanelProps) {
-  const { refresh } = useInceptions();
+  const { inceptions, loading, error, refresh } = useInceptions();
+  const [showComposer, setShowComposer] = useState(mode === "full");
+
+  const handleSubmitted = () => {
+    void refresh();
+    if (mode !== "full") {
+      setShowComposer(false);
+    }
+  };
 
   if (mode === "form-only") {
     return <InceptionForm onSubmitted={refresh} />;
   }
 
   if (mode === "list-only") {
-    return <InceptionList />;
+    return (
+      <InceptionList
+        inceptions={inceptions}
+        loading={loading}
+        error={error}
+        refresh={refresh}
+        allowComposerToggle={true}
+        showComposer={showComposer}
+        onToggleComposer={() => setShowComposer((prev) => !prev)}
+        onSubmitted={handleSubmitted}
+      />
+    );
   }
 
   return (
     <div>
       <InceptionForm onSubmitted={refresh} />
-      <InceptionList />
+      <InceptionList
+        inceptions={inceptions}
+        loading={loading}
+        error={error}
+        refresh={refresh}
+        allowComposerToggle={false}
+        showComposer={false}
+        onToggleComposer={() => {}}
+        onSubmitted={handleSubmitted}
+      />
     </div>
   );
 }

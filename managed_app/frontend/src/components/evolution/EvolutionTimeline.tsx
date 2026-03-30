@@ -1,16 +1,9 @@
 import { useEffect, useState } from "react";
 import { useEvolutionEvents, EvolutionEvent } from "../../hooks/useEvolutionApi";
 import { StatusBadge } from "./StatusBadge";
+import { parseExecutionHistory, type EventHistoryEntry } from "./eventDetails";
 
-interface EventLogEntry {
-  timestamp: string;
-  agent: string;
-  action: string;
-  status: string;
-  details?: string;
-}
-
-function ExecutionSteps({ events }: { events: EventLogEntry[] }) {
+function ExecutionSteps({ events }: { events: EventHistoryEntry[] }) {
   if (!events || events.length === 0) return null;
   return (
     <div className="execution-steps">
@@ -44,10 +37,7 @@ function TimelineCard({ event }: { event: EvolutionEvent }) {
     ? Math.round((new Date(event.completed_at).getTime() - date.getTime()) / 1000)
     : null;
 
-  // Parse events_json — it can be an array of step objects
-  const executionEvents: EventLogEntry[] = Array.isArray(event.events_json)
-    ? (event.events_json as unknown as EventLogEntry[])
-    : [];
+  const executionEvents = parseExecutionHistory(event);
 
   return (
     <div className={`timeline-card ${isProactive ? "timeline-proactive" : ""}`} onClick={() => setExpanded(!expanded)}>

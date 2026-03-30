@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getAuthToken } from "./useAuth";
+import { fetchWithAuth } from "./useAuth";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,12 +51,40 @@ export interface DashboardStatus {
   failed_evolutions: number;
   current_purpose_version: number | null;
   pending_inceptions: number;
+  active_notifications: number;
   last_evolution: EvolutionEvent | null;
+}
+
+export interface SystemNotification {
+  id: string;
+  source: string;
+  kind: string;
+  severity: string;
+  message: string;
+  acknowledged: boolean;
+  acknowledged_at: string | null;
+  update_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
+
+async function toApiError(res: Response): Promise<Error> {
+  if (res.status === 401) {
+    return new Error("Session expired. Sign in again.");
+  }
+
+  const body = await res.json().catch(() => ({}));
+  const detail =
+    body !== null && typeof body === "object" && "detail" in body
+      ? String((body as { detail: unknown }).detail)
+      : null;
+
+  return new Error(detail || `HTTP ${res.status}`);
+}
 
 export function useEvolutionStatus(intervalMs = 5000) {
   const [status, setStatus] = useState<DashboardStatus | null>(null);
@@ -168,17 +196,14 @@ export function useSubmitInception() {
       setSubmitting(true);
       setError(null);
       try {
-        const token = getAuthToken();
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-        const res = await fetch("/api/v1/evolution/inceptions", {
+        const res = await fetchWithAuth("/api/v1/evolution/inceptions", {
           method: "POST",
-          headers,
+          headers: {
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ source, directive, rationale }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) throw await toApiError(res);
         return await res.json();
       } catch (err) {
         setError((err as Error).message);
@@ -203,16 +228,13 @@ export function useTriggerAnalysis() {
     setError(null);
     setTriggered(false);
     try {
-      const token = getAuthToken();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch("/api/v1/evolution/trigger-analysis", {
+      const res = await fetchWithAuth("/api/v1/evolution/trigger-analysis", {
         method: "POST",
-        headers,
+        headers: {
+          "Content-Type": "application/json",
+        },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw await toApiError(res);
       setTriggered(true);
       return true;
     } catch (err) {
@@ -224,4 +246,40 @@ export function useTriggerAnalysis() {
   }, []);
 
   return { trigger, triggering, triggered, error };
+}
+
+export function useNotifications(intervalMs = 5000) {
+  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/evolution/notifications");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: SystemNotification[] = await res.json();
+      setNotifications(data);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const acknowledge = useCallback(async (notificationId: string) => {
+    const res = await fetchWithAuth(`/api/v1/evolution/notifications/${notificationId}/acknowledge`, {
+      method: "PUT",
+    });
+    if (!res.ok) throw await toApiError(res);
+    await refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, intervalMs);
+    return () => clearInterval(timer);
+  }, [refresh, intervalMs]);
+
+  return { notifications, loading, error, refresh, acknowledge };
 }

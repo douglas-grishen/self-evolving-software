@@ -1,6 +1,6 @@
 """Request metrics middleware.
 
-Tracks every HTTP request passing through the backend so the Autonomic Manager
+Tracks every HTTP request passing through the backend so the Evolution Plane
 can observe runtime behavior: latency, error rates, endpoint usage patterns.
 
 Data is stored in-memory (ring buffers) and exposed via /api/v1/monitor/metrics
@@ -9,7 +9,7 @@ and /api/v1/monitor/errors on the control-plane network.
 
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -28,10 +28,13 @@ _INTERNAL_PROBE_VALUES = {"runtime-contract"}
 # Counters
 _request_count: int = 0
 _error_count: int = 0
+_client_error_count: int = 0
 _startup_time: float = time.time()
 
-# Per-endpoint stats: {method:path -> {"count", "total_ms", "errors"}}
-_endpoint_stats: dict[str, dict] = defaultdict(lambda: {"count": 0, "total_ms": 0.0, "errors": 0})
+# Per-endpoint stats: {method:path -> {"count", "total_ms", "errors", "client_errors"}}
+_endpoint_stats: dict[str, dict] = defaultdict(
+    lambda: {"count": 0, "total_ms": 0.0, "errors": 0, "client_errors": 0}
+)
 
 # Recent errors ring buffer
 _recent_errors: deque = deque(maxlen=_MAX_ERRORS)
@@ -44,11 +47,17 @@ _recent_slow: deque = deque(maxlen=_MAX_SLOW)
 # Middleware class
 # ---------------------------------------------------------------------------
 
+
+def _is_runtime_error_status(status_code: int) -> bool:
+    """Only server-side failures should influence autonomous bug-fixing decisions."""
+    return status_code >= 500
+
+
 class MetricsMiddleware(BaseHTTPMiddleware):
     """Intercepts every request to record latency and error information."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        global _request_count, _error_count
+        global _request_count, _error_count, _client_error_count
 
         start = time.monotonic()
         key = f"{request.method}:{request.url.path}"
@@ -57,6 +66,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             request.headers.get(_INTERNAL_PROBE_HEADER, "").strip().lower()
             in _INTERNAL_PROBE_VALUES
         )
+        exception_recorded = False
 
         try:
             response = await call_next(request)
@@ -65,7 +75,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             if not is_internal_probe:
                 _recent_errors.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                     "method": request.method,
                     "path": request.url.path,
                     "error_type": type(exc).__name__,
@@ -73,6 +83,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     "status_code": 500,
                 })
                 _error_count += 1
+                exception_recorded = True
             raise
         finally:
             if not is_internal_probe:
@@ -82,20 +93,25 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 stats["count"] += 1
                 stats["total_ms"] += elapsed_ms
 
-                if status_code >= 400:
+                if 400 <= status_code < 500:
+                    stats["client_errors"] += 1
+                    _client_error_count += 1
+
+                if _is_runtime_error_status(status_code):
                     stats["errors"] += 1
-                    _error_count += 1
-                    _recent_errors.append({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "method": request.method,
-                        "path": request.url.path,
-                        "status_code": status_code,
-                        "latency_ms": round(elapsed_ms, 2),
-                    })
+                    if not exception_recorded:
+                        _error_count += 1
+                        _recent_errors.append({
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "method": request.method,
+                            "path": request.url.path,
+                            "status_code": status_code,
+                            "latency_ms": round(elapsed_ms, 2),
+                        })
 
                 if elapsed_ms > _SLOW_THRESHOLD_MS:
                     _recent_slow.append({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "method": request.method,
                         "path": request.url.path,
                         "latency_ms": round(elapsed_ms, 2),
@@ -124,6 +140,7 @@ def get_metrics_snapshot() -> dict:
             "avg_latency_ms": round(avg_ms, 2),
             "error_rate": round(ep_error_rate, 4),
             "error_count": stats["errors"],
+            "client_error_count": stats["client_errors"],
         })
 
     # Sort by request count descending
@@ -133,6 +150,7 @@ def get_metrics_snapshot() -> dict:
         "uptime_seconds": uptime_seconds,
         "total_requests": _request_count,
         "total_errors": _error_count,
+        "total_client_errors": _client_error_count,
         "global_error_rate": error_rate,
         "slow_request_threshold_ms": _SLOW_THRESHOLD_MS,
         "recent_slow_requests": list(_recent_slow)[-10:],

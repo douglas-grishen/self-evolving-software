@@ -1,1 +1,1 @@
-"""Middleware modules for the Managed App backend."""
+"""Middleware modules for the Operational Plane backend."""

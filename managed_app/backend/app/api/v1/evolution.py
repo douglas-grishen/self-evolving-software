@@ -9,8 +9,9 @@ Engine-facing endpoints (control-plane):
   GET  /backlog             — engine fetches the persisted proactive backlog
   POST /backlog/sync        — engine replaces or updates the proactive backlog
   PUT  /backlog/{id}        — engine updates task execution state
+  POST /notifications       — engine emits or refreshes a persistent blocker notification
 
-UI-facing endpoints (managed-system):
+UI-facing endpoints (operational-plane):
   GET  /events              — evolution history (paginated)
   GET  /events/{request_id} — single evolution detail
   GET  /inceptions          — inception history
@@ -18,17 +19,22 @@ UI-facing endpoints (managed-system):
   GET  /purpose             — current purpose
   GET  /purpose/history     — all purpose versions
   GET  /backlog             — proactive roadmap with task status
+  GET  /notifications       — active or historical system notifications
+  PUT  /notifications/{id}/acknowledge — dismiss a notification from the list
   GET  /status              — dashboard summary
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+import hashlib
+import logging
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_admin
+from app.config import settings
 from app.database import get_db
 from app.models.admin import AdminUser
 from app.models.evolution import (
@@ -36,6 +42,7 @@ from app.models.evolution import (
     EvolutionEventRecord,
     InceptionRecord,
     PurposeRecord,
+    SystemNotificationRecord,
 )
 from app.schemas.evolution import (
     BacklogItemResponse,
@@ -49,12 +56,128 @@ from app.schemas.evolution import (
     InceptionUpdate,
     PurposeCreate,
     PurposeResponse,
+    SystemNotificationCreate,
+    SystemNotificationResponse,
 )
 
 router = APIRouter(prefix="/evolution", tags=["evolution"])
+logger = logging.getLogger(__name__)
 
 # In-memory flag for on-demand analysis trigger (cleared after engine polls it)
 _analysis_trigger_flag = False
+_NOTIFICATION_DEDUP_WINDOW = timedelta(hours=24)
+_SEVERITY_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "critical": 3,
+}
+
+
+def _notification_message_hash(message: str) -> str:
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def _should_forward_notification(severity: str) -> bool:
+    """Return whether a notification should trigger an external alert."""
+    webhook_url = settings.notification_webhook_url.strip()
+    if not webhook_url:
+        return False
+
+    threshold = _SEVERITY_ORDER.get(settings.notification_webhook_min_severity.strip().lower(), 3)
+    current = _SEVERITY_ORDER.get((severity or "").strip().lower(), 0)
+    return current >= threshold
+
+
+def _notification_webhook_payload(record: SystemNotificationRecord) -> dict:
+    return {
+        "id": record.id,
+        "source": record.source,
+        "kind": record.kind,
+        "severity": record.severity,
+        "message": record.message,
+        "acknowledged": record.acknowledged,
+        "update_count": record.update_count,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+async def _deliver_external_notification(payload: dict) -> None:
+    """Best-effort delivery of critical notifications to an external webhook."""
+    webhook_url = settings.notification_webhook_url.strip()
+    if not webhook_url:
+        return
+
+    headers = {"Content-Type": "application/json"}
+    if settings.notification_webhook_bearer_token.strip():
+        headers["Authorization"] = f"Bearer {settings.notification_webhook_bearer_token.strip()}"
+
+    timeout_seconds = max(1.0, float(settings.notification_webhook_timeout_seconds))
+    timeout = httpx.Timeout(timeout_seconds, connect=min(2.0, timeout_seconds))
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(webhook_url, json=payload, headers=headers)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("notifications.webhook_failed", extra={"error": str(exc)})
+
+
+def _schedule_external_notification(
+    background_tasks: BackgroundTasks | None,
+    record: SystemNotificationRecord,
+) -> None:
+    """Queue external alert delivery when configured and severe enough."""
+    if background_tasks is None or not _should_forward_notification(record.severity):
+        return
+    background_tasks.add_task(
+        _deliver_external_notification,
+        _notification_webhook_payload(record),
+    )
+
+
+async def _create_or_update_notification(
+    payload: SystemNotificationCreate,
+    db: AsyncSession,
+) -> SystemNotificationRecord:
+    """Merge repeated notifications with the same exact text inside the last 24 hours."""
+    now = datetime.now(UTC)
+    message_hash = _notification_message_hash(payload.message)
+
+    result = await db.execute(
+        select(SystemNotificationRecord)
+        .where(SystemNotificationRecord.message_hash == message_hash)
+        .where(SystemNotificationRecord.message == payload.message)
+        .where(SystemNotificationRecord.updated_at >= now - _NOTIFICATION_DEDUP_WINDOW)
+        .order_by(desc(SystemNotificationRecord.updated_at))
+        .limit(1)
+    )
+    record = result.scalar_one_or_none()
+
+    if record is None:
+        record = SystemNotificationRecord(
+            source=payload.source,
+            kind=payload.kind,
+            severity=payload.severity,
+            message=payload.message,
+            message_hash=message_hash,
+            acknowledged=False,
+            update_count=0,
+        )
+        db.add(record)
+        await db.flush()
+        return record
+
+    record.source = payload.source
+    record.kind = payload.kind
+    record.severity = payload.severity
+    record.updated_at = now
+    record.update_count += 1
+    record.acknowledged = False
+    record.acknowledged_at = None
+    await db.flush()
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +233,12 @@ async def update_evolution_event(
     return record
 
 
-@router.get("/events", response_model=List[EvolutionEventResponse])
+@router.get("/events", response_model=list[EvolutionEventResponse])
 async def list_evolution_events(
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-) -> List[EvolutionEventRecord]:
+) -> list[EvolutionEventRecord]:
     """List evolution events, most recent first."""
     result = await db.execute(
         select(EvolutionEventRecord)
@@ -166,12 +289,12 @@ async def create_inception(
     return record
 
 
-@router.get("/inceptions", response_model=List[InceptionResponse])
+@router.get("/inceptions", response_model=list[InceptionResponse])
 async def list_inceptions(
-    status: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     db: AsyncSession = Depends(get_db),
-) -> List[InceptionRecord]:
+) -> list[InceptionRecord]:
     """List inceptions, optionally filtered by status."""
     query = select(InceptionRecord).order_by(desc(InceptionRecord.submitted_at)).limit(limit)
     if status:
@@ -198,7 +321,7 @@ async def update_inception(
         setattr(record, field, value)
 
     if payload.status in ("applied", "rejected") and not record.processed_at:
-        record.processed_at = datetime.now(timezone.utc)
+        record.processed_at = datetime.now(UTC)
 
     await db.flush()
     return record
@@ -239,10 +362,10 @@ async def create_purpose(
     return record
 
 
-@router.get("/purpose", response_model=Optional[PurposeResponse])
+@router.get("/purpose", response_model=PurposeResponse | None)
 async def get_current_purpose(
     db: AsyncSession = Depends(get_db),
-) -> Optional[PurposeRecord]:
+) -> PurposeRecord | None:
     """Get the current (highest version) purpose."""
     result = await db.execute(
         select(PurposeRecord).order_by(desc(PurposeRecord.version)).limit(1)
@@ -250,10 +373,10 @@ async def get_current_purpose(
     return result.scalar_one_or_none()
 
 
-@router.get("/purpose/history", response_model=List[PurposeResponse])
+@router.get("/purpose/history", response_model=list[PurposeResponse])
 async def list_purpose_history(
     db: AsyncSession = Depends(get_db),
-) -> List[PurposeRecord]:
+) -> list[PurposeRecord]:
     """List all purpose versions, newest first."""
     result = await db.execute(
         select(PurposeRecord).order_by(desc(PurposeRecord.version))
@@ -266,12 +389,12 @@ async def list_purpose_history(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/backlog", response_model=List[BacklogItemResponse])
+@router.get("/backlog", response_model=list[BacklogItemResponse])
 async def list_backlog_items(
-    purpose_version: Optional[int] = Query(default=None),
+    purpose_version: int | None = Query(default=None),
     include_completed: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
-) -> List[EvolutionBacklogItemRecord]:
+) -> list[EvolutionBacklogItemRecord]:
     """List proactive backlog items, ordered by plan sequence."""
     query = select(EvolutionBacklogItemRecord).order_by(
         EvolutionBacklogItemRecord.purpose_version.desc(),
@@ -288,11 +411,11 @@ async def list_backlog_items(
     return list(result.scalars().all())
 
 
-@router.post("/backlog/sync", response_model=List[BacklogItemResponse])
+@router.post("/backlog/sync", response_model=list[BacklogItemResponse])
 async def sync_backlog(
     payload: BacklogSyncRequest,
     db: AsyncSession = Depends(get_db),
-) -> List[EvolutionBacklogItemRecord]:
+) -> list[EvolutionBacklogItemRecord]:
     """Replace or update the proactive backlog for a Purpose version.
 
     The planner sends the full desired roadmap for the active Purpose version.
@@ -329,7 +452,7 @@ async def sync_backlog(
             if not preserve_blocked_state or item.blocked_reason:
                 record.blocked_reason = item.blocked_reason
             if record.status in {"done", "abandoned"} and not record.completed_at:
-                record.completed_at = datetime.now(timezone.utc)
+                record.completed_at = datetime.now(UTC)
             continue
 
         record = EvolutionBacklogItemRecord(
@@ -337,7 +460,7 @@ async def sync_backlog(
             **item_data,
         )
         if record.status in {"done", "abandoned"}:
-            record.completed_at = datetime.now(timezone.utc)
+            record.completed_at = datetime.now(UTC)
         db.add(record)
 
     for record in existing_records:
@@ -347,7 +470,7 @@ async def sync_backlog(
             continue
         record.status = "abandoned"
         record.blocked_reason = "Removed from replanned backlog"
-        record.completed_at = record.completed_at or datetime.now(timezone.utc)
+        record.completed_at = record.completed_at or datetime.now(UTC)
 
     await db.flush()
 
@@ -385,10 +508,71 @@ async def update_backlog_item(
         setattr(record, field, value)
 
     if record.status in {"done", "abandoned"} and not record.completed_at:
-        record.completed_at = datetime.now(timezone.utc)
+        record.completed_at = datetime.now(UTC)
     if "completed_at" not in update_data and record.status not in {"done", "abandoned"}:
         record.completed_at = None
 
+    await db.flush()
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+@router.post("/notifications", response_model=SystemNotificationResponse)
+async def create_or_update_notification(
+    payload: SystemNotificationCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> SystemNotificationRecord:
+    """Create a new notification or refresh the recent identical one."""
+    record = await _create_or_update_notification(payload, db)
+    _schedule_external_notification(background_tasks, record)
+    return record
+
+
+@router.get("/notifications", response_model=list[SystemNotificationResponse])
+async def list_notifications(
+    include_acknowledged: bool = Query(default=False),
+    limit: int = Query(default=50, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> list[SystemNotificationRecord]:
+    """List notifications with the newest updates first."""
+    query = (
+        select(SystemNotificationRecord)
+        .order_by(
+            desc(SystemNotificationRecord.updated_at),
+            desc(SystemNotificationRecord.created_at),
+        )
+        .limit(limit)
+    )
+    if not include_acknowledged:
+        query = query.where(SystemNotificationRecord.acknowledged.is_(False))
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+@router.put(
+    "/notifications/{notification_id}/acknowledge",
+    response_model=SystemNotificationResponse,
+)
+async def acknowledge_notification(
+    notification_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+) -> SystemNotificationRecord:
+    """Acknowledge a notification so it disappears until updated again."""
+    result = await db.execute(
+        select(SystemNotificationRecord).where(SystemNotificationRecord.id == notification_id)
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    record.acknowledged = True
+    record.acknowledged_at = datetime.now(UTC)
     await db.flush()
     return record
 
@@ -406,7 +590,7 @@ async def dashboard_status(
     # Old terminal reports can be lost during backend restarts. Treat only
     # recent non-terminal rows as "active" so stale historical entries do not
     # make the UI look permanently busy.
-    active_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+    active_cutoff = datetime.now(UTC) - timedelta(minutes=15)
 
     # Count evolutions by status
     total = await db.execute(select(func.count()).select_from(EvolutionEventRecord))
@@ -448,6 +632,13 @@ async def dashboard_status(
     )
     pending_count = pending.scalar() or 0
 
+    active_notifications = await db.execute(
+        select(func.count())
+        .select_from(SystemNotificationRecord)
+        .where(SystemNotificationRecord.acknowledged.is_(False))
+    )
+    active_notification_count = active_notifications.scalar() or 0
+
     # Last evolution
     last_result = await db.execute(
         select(EvolutionEventRecord)
@@ -463,6 +654,7 @@ async def dashboard_status(
         failed_evolutions=failed_count,
         current_purpose_version=current_purpose_version,
         pending_inceptions=pending_count,
+        active_notifications=active_notification_count,
         last_evolution=EvolutionEventResponse.model_validate(last_record) if last_record else None,
     )
 

@@ -1,1 +1,1 @@
-"""Managed App Backend — FastAPI application."""
+"""Operational Plane backend — FastAPI application."""

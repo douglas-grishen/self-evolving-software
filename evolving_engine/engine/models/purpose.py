@@ -47,6 +47,15 @@ class Purpose(BaseModel):
             data = yaml.safe_load(f)
         return cls.model_validate(data)
 
+    @classmethod
+    def load_optional(cls, path: Path) -> Purpose | None:
+        """Load Purpose from YAML, treating an empty file as 'no purpose yet'."""
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        if data is None:
+            return None
+        return cls.model_validate(data)
+
     def save(self, path: Path) -> None:
         """Write Purpose to a YAML file."""
         data = self.model_dump(mode="json")
@@ -61,7 +70,11 @@ class Purpose(BaseModel):
         """Archive the current purpose file before overwriting with a new version."""
         history_dir.mkdir(parents=True, exist_ok=True)
         archive_name = f"purpose_v{self.version}.yaml"
-        shutil.copy2(purpose_path, history_dir / archive_name)
+        archive_path = history_dir / archive_name
+        if purpose_path.exists():
+            shutil.copy2(purpose_path, archive_path)
+            return
+        self.save(archive_path)
 
     def to_prompt_context(self) -> str:
         """Format Purpose as a text block suitable for LLM system/user prompts."""
