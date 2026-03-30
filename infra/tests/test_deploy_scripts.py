@@ -78,3 +78,11 @@ def test_common_script_sources_private_overlay_env_when_present(tmp_path):
 
     assert values["PUBLIC_HOST"] == "private.example.test"
     assert values["COMPOSE_PROJECT"] == "ses-demo"
+
+
+def test_install_script_syncs_framework_alembic_tree():
+    install_script = (REPO_ROOT / "deploy" / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+    assert 'rm -rf "$EVOLVED_APP_ROOT/backend/alembic"' in install_script
+    assert '"$FRAMEWORK_ROOT/managed_app/backend/alembic"' in install_script
+    assert '"$FRAMEWORK_ROOT/managed_app/backend/alembic.ini"' in install_script

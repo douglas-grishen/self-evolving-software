@@ -81,6 +81,11 @@ else
 fi
 install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/app/config.py" \
   "$EVOLVED_APP_ROOT/backend/app/config.py"
+rm -rf "$EVOLVED_APP_ROOT/backend/alembic"
+cp -a "$FRAMEWORK_ROOT/managed_app/backend/alembic" \
+  "$EVOLVED_APP_ROOT/backend/alembic"
+install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/alembic.ini" \
+  "$EVOLVED_APP_ROOT/backend/alembic.ini"
 install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/backend/pyproject.toml" \
   "$EVOLVED_APP_ROOT/backend/pyproject.toml"
 install -D -m 0644 "$FRAMEWORK_ROOT/managed_app/frontend/package.json" \
