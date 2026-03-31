@@ -20,3 +20,4 @@ backend/app/schemas/evolution.py
 backend/app/schemas/system_settings.py
 frontend/src/components/WelcomePurpose.tsx
 frontend/src/components/evolution/PurposeViewer.tsx
+frontend/src/hooks/useAuth.ts
