@@ -1,5 +1,7 @@
 import { usePurpose, useTriggerAnalysis } from "../../hooks/useEvolutionApi";
 
+const PLAIN_TEXT_PURPOSE_NAME = "User-Defined Purpose";
+
 interface PurposeData {
   version: number;
   updated_at: string;
@@ -72,6 +74,18 @@ function RequirementsList({ title, items }: { title: string; items: string[] }) 
   );
 }
 
+function isPlainTextPurpose(parsed: PurposeData | null): boolean {
+  if (!parsed) return false;
+  return (
+    parsed.identity?.name === PLAIN_TEXT_PURPOSE_NAME &&
+    parsed.functional_requirements.length === 0 &&
+    parsed.technical_requirements.length === 0 &&
+    parsed.security_requirements.length === 0 &&
+    parsed.constraints.length === 0 &&
+    parsed.evolution_directives.length === 0
+  );
+}
+
 export function PurposeViewer() {
   const { purpose, loading, error } = usePurpose();
   const { trigger, triggering, triggered, error: triggerError } = useTriggerAnalysis();
@@ -81,6 +95,7 @@ export function PurposeViewer() {
   if (!purpose) return <div className="card">No purpose defined yet.</div>;
 
   const parsed = parsePurposeYaml(purpose.content_yaml);
+  const plainTextPurpose = isPlainTextPurpose(parsed);
 
   return (
     <div className="card purpose-viewer">
@@ -92,14 +107,18 @@ export function PurposeViewer() {
       {parsed ? (
         <>
           <div className="purpose-identity">
-            <strong>{parsed.identity?.name}</strong>
+            {!plainTextPurpose && <strong>{parsed.identity?.name}</strong>}
             <p>{parsed.identity?.description}</p>
           </div>
-          <RequirementsList title="Functional Requirements" items={parsed.functional_requirements} />
-          <RequirementsList title="Technical Requirements" items={parsed.technical_requirements} />
-          <RequirementsList title="Security Requirements" items={parsed.security_requirements} />
-          <RequirementsList title="Constraints" items={parsed.constraints} />
-          <RequirementsList title="Evolution Directives" items={parsed.evolution_directives} />
+          {!plainTextPurpose && (
+            <>
+              <RequirementsList title="Functional Requirements" items={parsed.functional_requirements} />
+              <RequirementsList title="Technical Requirements" items={parsed.technical_requirements} />
+              <RequirementsList title="Security Requirements" items={parsed.security_requirements} />
+              <RequirementsList title="Constraints" items={parsed.constraints} />
+              <RequirementsList title="Evolution Directives" items={parsed.evolution_directives} />
+            </>
+          )}
         </>
       ) : (
         <pre className="purpose-raw">{purpose.content_yaml}</pre>

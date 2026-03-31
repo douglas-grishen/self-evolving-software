@@ -3,8 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Evolution Events
@@ -99,9 +98,19 @@ class InceptionResponse(BaseModel):
 class PurposeCreate(BaseModel):
     """Payload the engine sends to store a purpose version."""
 
-    version: int
-    content_yaml: str
+    version: int = Field(ge=1)
+    content_yaml: Optional[str] = None
+    purpose_text: Optional[str] = None
     inception_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_input_source(self) -> "PurposeCreate":
+        """Require exactly one purpose input format."""
+        has_yaml = bool(self.content_yaml and self.content_yaml.strip())
+        has_text = bool(self.purpose_text and self.purpose_text.strip())
+        if has_yaml == has_text:
+            raise ValueError("Provide exactly one of content_yaml or purpose_text.")
+        return self
 
 
 class PurposeResponse(BaseModel):

@@ -25,7 +25,9 @@ UI-facing endpoints (operational-plane):
 """
 
 import hashlib
+import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -72,10 +74,100 @@ _SEVERITY_ORDER = {
     "high": 2,
     "critical": 3,
 }
+_PLAIN_TEXT_PURPOSE_NAME = "User-Defined Purpose"
 
 
 def _notification_message_hash(message: str) -> str:
     return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def _normalize_inline_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _derive_purpose_name(purpose_text: str) -> str:
+    for raw_line in purpose_text.splitlines():
+        candidate = _normalize_inline_text(raw_line.lstrip("-*•").strip())
+        if not candidate:
+            continue
+        first_sentence = re.split(r"(?<=[.!?])\s+", candidate, maxsplit=1)[0].strip(" .,:;-")
+        if 3 <= len(first_sentence) <= 80:
+            return first_sentence
+        if 3 <= len(candidate) <= 80:
+            return candidate
+        break
+    return _PLAIN_TEXT_PURPOSE_NAME
+
+
+def _serialize_purpose_yaml(
+    *,
+    version: int,
+    name: str,
+    description: str,
+    functional_requirements: list[str] | None = None,
+    technical_requirements: list[str] | None = None,
+    security_requirements: list[str] | None = None,
+    constraints: list[str] | None = None,
+    evolution_directives: list[str] | None = None,
+) -> str:
+    def yaml_scalar(value: str) -> str:
+        return json.dumps(value, ensure_ascii=False)
+
+    def append_yaml_list(lines: list[str], key: str, values: list[str]) -> None:
+        if not values:
+            lines.append(f"{key}: []")
+            return
+        lines.append(f"{key}:")
+        for item in values:
+            lines.append(f"  - {yaml_scalar(item)}")
+
+    lines = [
+        f"version: {version}",
+        f'updated_at: "{datetime.now(UTC).isoformat()}"',
+        "",
+        "identity:",
+        f"  name: {yaml_scalar(name)}",
+        f"  description: {yaml_scalar(description)}",
+        "",
+    ]
+    append_yaml_list(lines, "functional_requirements", functional_requirements or [])
+    lines.append("")
+    append_yaml_list(lines, "technical_requirements", technical_requirements or [])
+    lines.append("")
+    append_yaml_list(lines, "security_requirements", security_requirements or [])
+    lines.append("")
+    append_yaml_list(lines, "constraints", constraints or [])
+    lines.append("")
+    append_yaml_list(lines, "evolution_directives", evolution_directives or [])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_purpose_yaml_from_text(purpose_text: str, version: int) -> str:
+    bullet_requirements: list[str] = []
+    normalized_lines: list[str] = []
+
+    for raw_line in purpose_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        bullet_match = re.match(r"^[-*•]\s+(.*)$", stripped)
+        cleaned = _normalize_inline_text(bullet_match.group(1) if bullet_match else stripped)
+        if not cleaned:
+            continue
+        normalized_lines.append(cleaned)
+        if bullet_match:
+            bullet_requirements.append(cleaned)
+
+    if not normalized_lines:
+        raise ValueError("Purpose text cannot be empty.")
+
+    description = " ".join(normalized_lines)
+    return _serialize_purpose_yaml(
+        version=version,
+        name=_derive_purpose_name(purpose_text),
+        description=description,
+        functional_requirements=bullet_requirements,
+    )
 
 
 def _should_forward_notification(severity: str) -> bool:
@@ -342,18 +434,26 @@ async def create_purpose(
     Startup can legitimately re-post the current Purpose. Treat version as an
     idempotency key so engine restarts do not raise a 500 on duplicate inserts.
     """
+    try:
+        content_yaml = payload.content_yaml or _build_purpose_yaml_from_text(
+            payload.purpose_text or "",
+            payload.version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     result = await db.execute(
         select(PurposeRecord).where(PurposeRecord.version == payload.version)
     )
     record = result.scalar_one_or_none()
 
     if record:
-        record.content_yaml = payload.content_yaml
+        record.content_yaml = content_yaml
         record.inception_id = payload.inception_id
     else:
         record = PurposeRecord(
             version=payload.version,
-            content_yaml=payload.content_yaml,
+            content_yaml=content_yaml,
             inception_id=payload.inception_id,
         )
         db.add(record)
