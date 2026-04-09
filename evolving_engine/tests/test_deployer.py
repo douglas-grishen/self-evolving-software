@@ -199,12 +199,22 @@ def test_protected_framework_manifest_covers_runtime_support_modules():
         "backend/app/system_settings.py",
         "backend/app/api/v1/auth.py",
         "backend/app/api/v1/apps.py",
+        "backend/app/api/v1/skills.py",
         "backend/app/api/v1/settings.py",
         "backend/app/models/apps.py",
+        "backend/app/models/skills.py",
         "backend/app/models/system_settings.py",
         "backend/app/middleware/metrics.py",
         "backend/app/schemas/apps.py",
+        "backend/app/schemas/skills.py",
         "backend/app/schemas/system_settings.py",
+        "backend/app/skills_runtime/__init__.py",
+        "backend/app/skills_runtime/base.py",
+        "backend/app/skills_runtime/models.py",
+        "backend/app/skills_runtime/registry.py",
+        "backend/app/skills_runtime/send_email.py",
+        "backend/app/skills_runtime/web_browser.py",
+        "frontend/src/components/SettingsView.tsx",
     }.issubset(entries)
 
 
