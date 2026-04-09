@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Operational Plane"
-    app_version: str = "1.1.8"
+    app_version: str = "1.1.9"
     debug: bool = False
     environment: str = "development"
 

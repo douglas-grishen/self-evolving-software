@@ -175,6 +175,24 @@ def _validate_repo_checkout(repo_root: Path) -> list[Finding]:
             )
         )
 
+    tracked_frontend_apps_dir = repo_root / "managed_app" / "frontend" / "src" / "apps"
+    if tracked_frontend_apps_dir.exists():
+        tracked_product_apps = sorted(
+            path.name
+            for path in tracked_frontend_apps_dir.iterdir()
+            if path.is_dir()
+        )
+        if tracked_product_apps:
+            apps_list = ", ".join(tracked_product_apps)
+            findings.append(
+                _error(
+                    "tracked_product_apps_present",
+                    "The deploy source still contains tracked product app modules under "
+                    f"managed_app/frontend/src/apps/: {apps_list}. "
+                    "New instances must start app-less and create business apps only in the instance-local evolved app.",
+                )
+            )
+
     return findings
 
 

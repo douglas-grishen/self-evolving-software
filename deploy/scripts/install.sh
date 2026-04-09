@@ -31,6 +31,14 @@ if [ ! -d "$EVOLVED_APP_ROOT/.git" ]; then
     cp -r "$FRAMEWORK_ROOT/managed_app/backend" "$EVOLVED_APP_ROOT/backend"
     cp -r "$FRAMEWORK_ROOT/managed_app/frontend" "$EVOLVED_APP_ROOT/frontend"
 
+    # New instances must never inherit tracked product apps from the framework
+    # bundle. Keep only the registry shell; product app modules belong to the
+    # instance-local evolved app after Purpose-driven creation.
+    if [ -d "$EVOLVED_APP_ROOT/frontend/src/apps" ]; then
+        find "$EVOLVED_APP_ROOT/frontend/src/apps" -mindepth 1 \
+          ! -name 'registry.tsx' ! -name 'registry.ts' -exec rm -rf {} +
+    fi
+
     if [ -d "$FRAMEWORK_ROOT/$INSTANCE_OVERLAY_PATH/seed/operational-plane" ]; then
         cp -a "$FRAMEWORK_ROOT/$INSTANCE_OVERLAY_PATH/seed/operational-plane"/. "$EVOLVED_APP_ROOT"/
     fi

@@ -104,6 +104,34 @@ def test_preflight_rejects_legacy_purpose_seed_checkout(tmp_path):
     assert "bootstrap_starts_services_early" in error_codes
 
 
+def test_preflight_rejects_tracked_product_apps_in_framework_checkout(tmp_path):
+    (tmp_path / "infra").mkdir()
+    (tmp_path / "infra" / "stacks").mkdir()
+    (tmp_path / "evolving_engine" / "engine").mkdir(parents=True)
+    (tmp_path / "managed_app" / "frontend" / "src" / "apps" / "competitive-intelligence").mkdir(
+        parents=True
+    )
+    (tmp_path / "appspec.yml").write_text("version: 0.0\n")
+    (tmp_path / "docker-compose.prod.yml").write_text("services:\n  engine:\n    environment: {}\n")
+    (tmp_path / "evolving_engine" / "engine" / "config.py").write_text("class Settings: pass\n")
+    (tmp_path / "infra" / "stacks" / "ec2_stack.py").write_text("")
+    (tmp_path / "framework_invariants.yaml").write_text((REPO_ROOT / "framework_invariants.yaml").read_text())
+    (tmp_path / "genesis.yaml").write_text((REPO_ROOT / "genesis.yaml").read_text())
+    (tmp_path / "contracts.example.yaml").write_text((REPO_ROOT / "contracts.example.yaml").read_text())
+
+    result = run_preflight(
+        tmp_path,
+        {
+            "INSTANCE_KEY": "demo-instance",
+            "CONNECTION_ARN": "arn:aws:codeconnections:us-east-1:123456789012:connection/example",
+            "SKIP_GIT_SOURCE_CHECKS": "1",
+        },
+    )
+
+    error_codes = {finding.code for finding in result.errors}
+    assert "tracked_product_apps_present" in error_codes
+
+
 def test_preflight_rejects_deploy_source_branch_mismatch(monkeypatch):
     responses = {
         ("status", "--short"): "",

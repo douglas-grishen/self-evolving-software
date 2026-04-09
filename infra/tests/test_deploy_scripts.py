@@ -90,6 +90,15 @@ def test_install_script_syncs_framework_alembic_tree():
     assert '"$FRAMEWORK_ROOT/managed_app/backend/alembic.ini"' in install_script
 
 
+def test_install_script_strips_tracked_product_apps_on_first_bootstrap():
+    install_script = (REPO_ROOT / "deploy" / "scripts" / "install.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'find "$EVOLVED_APP_ROOT/frontend/src/apps" -mindepth 1' in install_script
+    assert "! -name 'registry.tsx'" in install_script
+
+
 def test_protected_framework_manifest_syncs_purpose_shell_frontend():
     manifest = (REPO_ROOT / "protected_framework_files.txt").read_text(encoding="utf-8")
 
