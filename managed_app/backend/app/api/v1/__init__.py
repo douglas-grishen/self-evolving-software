@@ -15,12 +15,13 @@ from app.api.v1.evolution import router as evolution_router
 from app.api.v1.apps import router as apps_router
 from app.api.v1.system import router as system_router
 from app.api.v1.settings import router as settings_router
+from app.api.v1.skills import router as skills_router
 
 logger = logging.getLogger(__name__)
 
 # ── Core framework routers (always loaded, never modified by engine) ──────────
 _CORE_MODULES = {
-    "auth", "chat", "health", "monitor", "evolution", "apps", "system", "settings", "__init__",
+    "auth", "chat", "health", "monitor", "evolution", "apps", "system", "settings", "skills", "__init__",
 }
 
 v1_router = APIRouter(prefix="/api/v1")
@@ -32,6 +33,7 @@ v1_router.include_router(evolution_router)  # Evolution tracking + Inception API
 v1_router.include_router(apps_router)       # Apps, Features & Capabilities framework
 v1_router.include_router(system_router)     # System metadata (deploy version, etc.)
 v1_router.include_router(settings_router)   # Runtime configuration (settings)
+v1_router.include_router(skills_router)     # Runtime skills registry + invocation
 
 # ── Auto-discover engine-generated routers ────────────────────────────────────
 # The engine can add new API modules to this package without modifying this file.

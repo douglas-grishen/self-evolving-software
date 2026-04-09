@@ -113,6 +113,20 @@ def _default_core_framework_probes() -> tuple[RuntimeContractProbe, ...]:
         ),
         RuntimeContractProbe(
             app_key="framework",
+            method="GET",
+            path="/api/v1/skills",
+            description="Runtime skills registry route must stay mounted",
+            expected_statuses=(200,),
+        ),
+        RuntimeContractProbe(
+            app_key="framework",
+            method="GET",
+            path="/api/v1/skills/web-browser/schema",
+            description="Runtime skill schema route must stay mounted",
+            expected_statuses=(200, 404),
+        ),
+        RuntimeContractProbe(
+            app_key="framework",
             method="POST",
             path="/api/v1/chat",
             description="Chat route must remain mounted",

@@ -7,8 +7,8 @@ class Settings(BaseSettings):
     """Backend settings — values are loaded from environment variables or .env file."""
 
     # Application
-    app_name: str = "Managed App"
-    app_version: str = "1.1.0"
+    app_name: str = "Operational Plane"
+    app_version: str = "1.1.5"
     debug: bool = False
     environment: str = "development"
 

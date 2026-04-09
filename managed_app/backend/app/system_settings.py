@@ -16,7 +16,11 @@ from app.models.system_settings import SystemSetting
 logger = logging.getLogger(__name__)
 
 ALLOWED_LLM_PROVIDERS = {"anthropic", "bedrock", "openai"}
-SECRET_SETTING_KEYS = {"anthropic_api_key", "openai_api_key"}
+SECRET_SETTING_KEYS = {
+    "anthropic_api_key",
+    "openai_api_key",
+    "skill_email_resend_api_key",
+}
 LEGACY_LLM_PROVIDER_KEY = "llm_provider"
 LEGACY_LLM_MODEL_KEY = "llm_model"
 CHAT_LLM_PROVIDER_KEY = "chat_llm_provider"
@@ -56,6 +60,12 @@ EDITABLE_SETTING_KEYS = {
     "anthropic_api_key",
     "openai_api_key",
     ENGINE_DAILY_USAGE_SNAPSHOT_KEY,
+    "skill_browser_enabled",
+    "skill_browser_timeout_seconds",
+    "skill_browser_allowed_domains",
+    "skill_email_enabled",
+    "skill_email_resend_api_key",
+    "skill_email_default_from",
 }
 
 
@@ -188,6 +198,30 @@ def build_default_system_settings() -> dict[str, tuple[str, str]]:
         ENGINE_DAILY_USAGE_SNAPSHOT_KEY: (
             "{}",
             "Engine-maintained UTC daily usage snapshot for LLM calls, tokens, and proactive runs.",
+        ),
+        "skill_browser_enabled": (
+            "false",
+            "Enable the structured Playwright-backed web-browser runtime skill.",
+        ),
+        "skill_browser_timeout_seconds": (
+            "15",
+            "Default timeout in seconds for each web-browser skill invocation.",
+        ),
+        "skill_browser_allowed_domains": (
+            "",
+            "Optional JSON array or comma-separated domain allowlist for the web-browser skill.",
+        ),
+        "skill_email_enabled": (
+            "false",
+            "Enable the Resend-backed send-email runtime skill.",
+        ),
+        "skill_email_resend_api_key": (
+            "",
+            "Resend API key used by the send-email runtime skill.",
+        ),
+        "skill_email_default_from": (
+            "",
+            "Default verified From address for the send-email runtime skill.",
         ),
     }
 

@@ -1,5 +1,4 @@
 """System settings API — runtime configuration for chat and the engine."""
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
@@ -19,9 +18,11 @@ from app.system_settings import (
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+_BOOLEAN_SETTING_KEYS = {"skill_browser_enabled", "skill_email_enabled"}
+_INTEGER_SETTING_KEYS = {"skill_browser_timeout_seconds"}
 
 
-@router.get("", response_model=List[SettingResponse])
+@router.get("", response_model=list[SettingResponse])
 async def list_settings(db: AsyncSession = Depends(get_db)) -> list:
     """List all system settings."""
     result = await db.execute(
@@ -86,7 +87,10 @@ async def update_setting(
         try:
             v = int(payload.value)
             if not (5 <= v <= 1440):
-                raise HTTPException(status_code=422, detail="Interval must be between 5 and 1440 minutes")
+                raise HTTPException(
+                    status_code=422,
+                    detail="Interval must be between 5 and 1440 minutes",
+                )
         except ValueError:
             raise HTTPException(status_code=422, detail="Interval must be an integer")
     elif key in ENGINE_BUDGET_SETTING_KEYS:
@@ -109,7 +113,22 @@ async def update_setting(
         payload.value = payload.value.strip()
         if not payload.value:
             raise HTTPException(status_code=422, detail="Model cannot be blank")
+    elif key in _BOOLEAN_SETTING_KEYS:
+        normalized = payload.value.strip().lower()
+        if normalized not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            raise HTTPException(status_code=422, detail="Value must be a boolean toggle")
+        payload.value = "true" if normalized in {"true", "1", "yes", "on"} else "false"
+    elif key in _INTEGER_SETTING_KEYS:
+        try:
+            value = int(payload.value)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Value must be an integer")
+        if value < 1:
+            raise HTTPException(status_code=422, detail="Value must be at least 1")
+        payload.value = str(value)
     elif key in SECRET_SETTING_KEYS:
+        payload.value = payload.value.strip()
+    elif key.startswith("skill_"):
         payload.value = payload.value.strip()
 
     await db.execute(

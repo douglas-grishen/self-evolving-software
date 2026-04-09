@@ -29,6 +29,7 @@ from engine.models.evolution import (
 )
 from engine.models.memory import EngineMemory
 from engine.models.repo_map import RepoMap
+from engine.models.skills import AvailableSkill
 
 
 class EvolutionContext(BaseModel):
@@ -58,6 +59,9 @@ class EvolutionContext(BaseModel):
     # Lessons fetched from backend at the start of each cycle (by DataManagerAgent).
     # Injected into the code generator's system prompt to prevent repeated mistakes.
     lessons: list[EngineMemory] = Field(default_factory=list)
+
+    # Runtime skills available through the Operational Plane backend.
+    available_skills: list[AvailableSkill] = Field(default_factory=list)
 
     # Produced by Leader Agent
     plan: EvolutionPlan | None = None

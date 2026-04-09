@@ -259,8 +259,16 @@ class CodeGeneratorAgent(BaseAgent):
                     + "\n".join(f"- {s}" for s in ctx.validation_result.suggestions)
                 )
 
+        skills_context = ""
+        if ctx.available_skills:
+            skills_context = (
+                "\n\n## Runtime Skills Available\n"
+                + "\n".join(skill.to_prompt_line() for skill in ctx.available_skills)
+            )
+
         user_prompt = (
             f"## Evolution Plan\n```json\n{plan_json}\n```\n\n"
+            f"{skills_context}\n\n"
             f"## Repository Map\n{repo_context}"
             f"{feedback}\n\n"
             f"Generate the complete file contents for each change in the plan."

@@ -26,6 +26,7 @@ RUN git config --global user.email "engine@self-evolving-software.local" \
 # Install Python dependencies
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
+RUN python -m playwright install --with-deps chromium
 
 # Copy engine code
 COPY . .

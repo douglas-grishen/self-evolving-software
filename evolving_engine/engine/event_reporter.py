@@ -25,6 +25,7 @@ from engine.models.backlog import BacklogItem, BacklogPlanItem
 from engine.models.inception import InceptionRequest, InceptionResult, InceptionSource
 from engine.models.memory import EngineMemory
 from engine.models.purpose import Purpose
+from engine.models.skills import AvailableSkill
 from engine.runtime_contracts import (
     get_core_availability_probes,
     validate_runtime_contract_response,
@@ -242,6 +243,18 @@ class EventReporter:
         except Exception as exc:
             logger.debug("event_reporter.fetch_backlog_error", error=str(exc))
             return None
+
+    async def fetch_skills(self) -> list[AvailableSkill]:
+        """Fetch the runtime skill inventory from the backend."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(f"{self.base_url}/api/v1/skills")
+                resp.raise_for_status()
+                data = resp.json()
+            return [AvailableSkill.model_validate(item) for item in data]
+        except Exception as exc:
+            logger.debug("event_reporter.fetch_skills_error", error=str(exc))
+            return []
 
     async def sync_backlog(
         self,

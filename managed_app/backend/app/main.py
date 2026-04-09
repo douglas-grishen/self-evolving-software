@@ -10,6 +10,7 @@ from app.api.v1 import v1_router
 from app.auth import ensure_default_admin
 from app.config import settings
 from app.database import async_session
+from app.api.v1.skills import ensure_default_skills
 from app.middleware.metrics import MetricsMiddleware
 from app.system_settings import ensure_default_system_settings
 
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with async_session() as session:
         await ensure_default_admin(session)
         await ensure_default_system_settings(session)
+        await ensure_default_skills(session)
     yield
 
 
