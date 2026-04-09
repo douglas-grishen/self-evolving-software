@@ -337,6 +337,7 @@ class Orchestrator:
 
         current_signature = self._current_llm_signature()
         if current_signature == self._last_llm_config_signature:
+            self.usage_tracker.sync_llm_config_signature(current_signature)
             return
 
         attempted_provider = self.config.llm_provider
@@ -364,6 +365,10 @@ class Orchestrator:
 
         self.provider = next_provider
         self._sync_agents_with_provider()
+        _, reset_applied = self.usage_tracker.sync_llm_config_signature(
+            current_signature,
+            reset_proactive_counters_on_change=True,
+        )
         self._last_llm_config_signature = current_signature
         logger.info(
             "llm_config.reloaded",
@@ -372,6 +377,12 @@ class Orchestrator:
             anthropic_key_configured=bool(self.config.anthropic_api_key),
             openai_key_configured=bool(self.config.openai_api_key),
         )
+        if reset_applied:
+            logger.info(
+                "llm_config.reloaded_reset_proactive_budget",
+                provider=self.config.llm_provider,
+                model=self._active_provider_model(),
+            )
 
     async def _refresh_runtime_guardrails(self) -> None:
         """Hot-reload daily autonomy/cost limits from persisted settings."""

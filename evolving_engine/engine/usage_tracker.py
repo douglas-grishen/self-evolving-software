@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,7 @@ _STATE_LOCK = threading.Lock()
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _today_key() -> str:
@@ -104,6 +104,42 @@ class UsageTracker:
             self._write_unlocked(state)
             return json.loads(json.dumps(state))
 
+    def sync_llm_config_signature(
+        self,
+        signature: str,
+        *,
+        reset_proactive_counters_on_change: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist the active runtime LLM signature and optionally clear stale proactive blockers.
+
+        The daily token/call ledger is intentionally preserved. Only the proactive
+        safety counters are reset when the operator switches the engine to a new
+        runtime provider/model configuration and asks to recover from the old one.
+        """
+        normalized = (signature or "").strip()
+        with _STATE_LOCK:
+            state = self._load_unlocked()
+            previous = str(state.get("llm_config_signature") or "").strip()
+            reset_applied = False
+
+            if (
+                reset_proactive_counters_on_change
+                and previous
+                and normalized
+                and previous != normalized
+            ):
+                state["proactive_runs"] = 0
+                state["failed_evolutions"] = 0
+                state["task_attempts"] = {}
+                state["proactive_runs_by_task"] = {}
+                reset_applied = True
+
+            if normalized:
+                state["llm_config_signature"] = normalized
+
+            self._write_unlocked(state)
+            return json.loads(json.dumps(state)), reset_applied
+
     def _default_state(self) -> dict[str, Any]:
         now = _utcnow().isoformat()
         return {
@@ -117,6 +153,7 @@ class UsageTracker:
             "task_attempts": {},
             "proactive_runs_by_task": {},
             "providers": {},
+            "llm_config_signature": "",
         }
 
     def _load_unlocked(self) -> dict[str, Any]:

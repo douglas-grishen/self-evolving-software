@@ -765,6 +765,9 @@ async def test_refresh_runtime_llm_config_switches_provider_and_model(monkeypatc
     orchestrator.leader = SimpleNamespace(provider=None)
     orchestrator.generator = SimpleNamespace(provider=None)
     orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.usage_tracker = SimpleNamespace(
+        sync_llm_config_signature=lambda *args, **kwargs: ({}, False)
+    )
     orchestrator.event_reporter = _SettingsReporter(
         {
             "chat_llm_provider": "anthropic",
@@ -808,6 +811,9 @@ async def test_refresh_runtime_llm_config_falls_back_to_legacy_shared_settings(m
     orchestrator.leader = SimpleNamespace(provider=None)
     orchestrator.generator = SimpleNamespace(provider=None)
     orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.usage_tracker = SimpleNamespace(
+        sync_llm_config_signature=lambda *args, **kwargs: ({}, False)
+    )
     orchestrator.event_reporter = _SettingsReporter(
         {
             "llm_provider": "openai",
