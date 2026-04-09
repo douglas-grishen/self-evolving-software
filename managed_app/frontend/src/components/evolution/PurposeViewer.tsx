@@ -13,31 +13,50 @@ interface PurposeData {
   evolution_directives: string[];
 }
 
+function stripYamlQuotes(value: string): string {
+  return value.replace(/['"]/g, "");
+}
+
 function parsePurposeYaml(yaml: string): PurposeData | null {
   // Simple YAML-like parser for the structured purpose format
   // This handles the specific structure we produce
   try {
     const lines = yaml.split("\n");
-    const data: Record<string, unknown> = {};
+    const data: Record<string, unknown> = {
+      functional_requirements: [],
+      technical_requirements: [],
+      security_requirements: [],
+      constraints: [],
+      evolution_directives: [],
+    };
     let currentKey = "";
     let currentList: string[] = [];
     let inIdentity = false;
-    const identity: Record<string, string> = {};
+    let currentIdentityField: "name" | "description" | "" = "";
+    const identity: Record<string, string> = { name: "", description: "" };
 
     for (const line of lines) {
+      const indent = line.length - line.trimStart().length;
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
 
       if (trimmed.startsWith("version:")) {
         data.version = parseInt(trimmed.split(":")[1].trim());
+        currentIdentityField = "";
       } else if (trimmed.startsWith("updated_at:")) {
-        data.updated_at = trimmed.split(": ", 2)[1]?.replace(/['"]/g, "") || "";
+        data.updated_at = stripYamlQuotes(trimmed.split(": ", 2)[1] || "");
+        currentIdentityField = "";
       } else if (trimmed === "identity:") {
         inIdentity = true;
+        currentIdentityField = "";
       } else if (inIdentity && trimmed.startsWith("name:")) {
-        identity.name = trimmed.split(": ", 2)[1]?.replace(/['"]/g, "") || "";
+        identity.name = stripYamlQuotes(trimmed.split(": ", 2)[1] || "");
+        currentIdentityField = "name";
       } else if (inIdentity && trimmed.startsWith("description:")) {
-        identity.description = trimmed.split(": ", 2)[1]?.replace(/['"]/g, "") || "";
+        identity.description = stripYamlQuotes(trimmed.split(": ", 2)[1] || "");
+        currentIdentityField = "description";
+      } else if (inIdentity && currentIdentityField && indent >= 4 && !trimmed.includes(":")) {
+        identity[currentIdentityField] = `${identity[currentIdentityField]} ${stripYamlQuotes(trimmed)}`.trim();
       } else if (trimmed.endsWith(":") && !trimmed.startsWith("-")) {
         if (currentKey && currentList.length > 0) {
           data[currentKey] = currentList;
@@ -45,8 +64,18 @@ function parsePurposeYaml(yaml: string): PurposeData | null {
         currentKey = trimmed.slice(0, -1);
         currentList = [];
         inIdentity = false;
+        currentIdentityField = "";
+      } else if (trimmed.endsWith(": []")) {
+        const key = trimmed.slice(0, -4);
+        data[key] = [];
+        currentKey = "";
+        currentList = [];
+        inIdentity = false;
+        currentIdentityField = "";
       } else if (trimmed.startsWith("- ")) {
-        currentList.push(trimmed.slice(2).replace(/['"]/g, ""));
+        currentList.push(stripYamlQuotes(trimmed.slice(2)));
+      } else {
+        currentIdentityField = "";
       }
     }
     if (currentKey && currentList.length > 0) {
