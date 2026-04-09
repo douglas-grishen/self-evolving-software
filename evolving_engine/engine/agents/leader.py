@@ -231,10 +231,16 @@ class LeaderAgent(BaseAgent):
         if ctx.repo_map:
             repo_context = f"\n\n## Current Repository State\n{ctx.repo_map.to_context_string()}"
 
+        skills_context = ""
+        if ctx.available_skills:
+            skill_lines = "\n".join(skill.to_prompt_line() for skill in ctx.available_skills)
+            skills_context = f"\n\n## Runtime Skills Available\n{skill_lines}"
+
         user_prompt = (
             f"## User Request\n{ctx.request.user_request}"
             f"{framework_context}"
             f"{purpose_context}"
+            f"{skills_context}"
             f"{repo_context}"
         )
 

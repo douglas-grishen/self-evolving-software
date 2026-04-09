@@ -14,6 +14,7 @@ import app.models.admin  # noqa: F401 — register admin models
 import app.models.apps  # noqa: F401 — register apps/features/capabilities models
 import app.models.system_settings  # noqa: F401 — register system_settings model
 import app.models.memory  # noqa: F401 — register engine_memory model
+import app.models.skills  # noqa: F401 — register runtime skills model
 
 config = context.config
 

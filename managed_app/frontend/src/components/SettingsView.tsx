@@ -10,8 +10,20 @@ interface Setting {
 type ProviderKey = "anthropic" | "bedrock" | "openai";
 type RuntimeScope = "chat" | "engine";
 
-const SECRET_KEYS = new Set(["anthropic_api_key", "openai_api_key"]);
+const SECRET_KEYS = new Set([
+  "anthropic_api_key",
+  "openai_api_key",
+  "skill_email_resend_api_key",
+]);
 const ENGINE_USAGE_SNAPSHOT_KEY = "engine_daily_usage_snapshot";
+const SKILL_FIELDS = {
+  browserEnabled: "skill_browser_enabled",
+  browserTimeout: "skill_browser_timeout_seconds",
+  browserAllowlist: "skill_browser_allowed_domains",
+  emailEnabled: "skill_email_enabled",
+  emailApiKey: "skill_email_resend_api_key",
+  emailFrom: "skill_email_default_from",
+} as const;
 const RUNTIME_KEYS: Record<RuntimeScope, { provider: string; model: string }> = {
   chat: {
     provider: "chat_llm_provider",
@@ -136,6 +148,19 @@ function statusStyles(active: boolean) {
     : {};
 }
 
+function enabledValue(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value || "").trim().toLowerCase());
+}
+
+function sectionCardStyle() {
+  return {
+    background: "rgba(255,255,255,0.03)",
+    border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: 10,
+    padding: "14px 16px",
+  } as const;
+}
+
 export function SettingsView() {
   const [settings, setSettings] = useState<Setting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -251,6 +276,12 @@ export function SettingsView() {
   const intervalMinutes = parseInt(values.proactive_interval_minutes || "60", 10);
   const anthropicMasked = settings.find((setting) => setting.key === "anthropic_api_key")?.value || "";
   const openaiMasked = settings.find((setting) => setting.key === "openai_api_key")?.value || "";
+  const resendMasked = settings.find((setting) => setting.key === SKILL_FIELDS.emailApiKey)?.value || "";
+  const browserEnabled = enabledValue(values[SKILL_FIELDS.browserEnabled]);
+  const emailEnabled = enabledValue(values[SKILL_FIELDS.emailEnabled]);
+  const browserTimeout = values[SKILL_FIELDS.browserTimeout] || "15";
+  const browserAllowlist = values[SKILL_FIELDS.browserAllowlist] || "";
+  const emailDefaultFrom = values[SKILL_FIELDS.emailFrom] || "";
 
   const saveBudgetSettings = async () => {
     for (const field of BUDGET_FIELDS) {
@@ -266,7 +297,7 @@ export function SettingsView() {
         providers and models for each one while reusing the same provider API keys below.
       </p>
 
-      <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
+      <div style={sectionCardStyle()}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
           <div>
             <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Proactive Evolution Interval</div>
@@ -307,7 +338,7 @@ export function SettingsView() {
         )}
       </div>
 
-      <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
+      <div style={sectionCardStyle()}>
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Daily Engine Budgets</div>
           <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
@@ -359,146 +390,310 @@ export function SettingsView() {
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
-        {([
-          ["chat", chatProvider, chatModel],
-          ["engine", engineProvider, engineModel],
-        ] as [RuntimeScope, ProviderKey, string][]).map(([scope, provider, model]) => (
-          <div
-            key={scope}
-            style={{
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 10,
-              padding: "14px 16px",
-            }}
-          >
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>{runtimeTitle(scope)}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: "0.88rem", color: "#f4f4f5", fontWeight: 600 }}>Providers</div>
+          <div style={{ fontSize: "0.74rem", color: "#666", marginTop: 2 }}>
+            Shared runtime providers used by chat and self-evolution.
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
+          {([
+            ["chat", chatProvider, chatModel],
+            ["engine", engineProvider, engineModel],
+          ] as [RuntimeScope, ProviderKey, string][]).map(([scope, provider, model]) => (
+            <div
+              key={scope}
+              style={sectionCardStyle()}
+            >
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>{runtimeTitle(scope)}</div>
+                <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+                  {runtimeDescription(scope)}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
+                <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
+                  <select
+                    value={provider}
+                    onChange={(e) => updateRuntimeProvider(scope, normalizeProvider(e.target.value))}
+                    style={{ minWidth: 200, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
+                  >
+                    <option value="anthropic">Anthropic</option>
+                    <option value="bedrock">Amazon Bedrock</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </label>
+
+                <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 280px" }}>
+                  <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
+                  <input
+                    type="text"
+                    value={values[RUNTIME_KEYS[scope].model] ?? model}
+                    placeholder={defaultModelForProvider(provider)}
+                    onChange={(e) => setValues((current) => ({ ...current, [RUNTIME_KEYS[scope].model]: e.target.value }))}
+                    style={{ minWidth: 0, width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                  />
+                </label>
+
+                <button
+                  className="refresh-btn"
+                  style={{ padding: "6px 14px", minWidth: 88, ...statusStyles(Boolean(saved[`${scope}_runtime`])) }}
+                  onClick={() => runSave(`${scope}_runtime`, () => saveRuntime(scope, provider, values[RUNTIME_KEYS[scope].model] || model))}
+                  disabled={saving[`${scope}_runtime`]}
+                >
+                  {saved[`${scope}_runtime`] ? "✓ Saved" : saving[`${scope}_runtime`] ? "…" : "Save"}
+                </button>
+              </div>
+
+              <div style={{ marginTop: 10, fontSize: "0.75rem", color: "#666", lineHeight: 1.5 }}>
+                {runtimeProviderHelp(scope, provider)}
+              </div>
+
+              {errors[`${scope}_runtime`] && (
+                <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors[`${scope}_runtime`]}</div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
+          <div style={sectionCardStyle()}>
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Anthropic API Key</div>
               <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
-                {runtimeDescription(scope)}
+                {anthropicMasked ? `Stored locally as ${anthropicMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_ANTHROPIC_API_KEY."}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="password"
+                placeholder="sk-ant-…"
+                value={values.anthropic_api_key || ""}
+                onChange={(e) => setValues((current) => ({ ...current, anthropic_api_key: e.target.value }))}
+                style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              />
+              <button
+                className="refresh-btn"
+                style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.anthropic_api_key)) }}
+                onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", (values.anthropic_api_key || "").trim()).then(() => undefined))}
+                disabled={saving.anthropic_api_key || !(values.anthropic_api_key || "").trim()}
+              >
+                {saved.anthropic_api_key ? "✓ Saved" : saving.anthropic_api_key ? "…" : "Update"}
+              </button>
+              <button
+                className="refresh-btn"
+                style={{ padding: "4px 12px", minWidth: 84 }}
+                onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", "").then(() => undefined))}
+                disabled={saving.anthropic_api_key || !anthropicMasked}
+              >
+                Clear
+              </button>
+            </div>
+            {errors.anthropic_api_key && (
+              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.anthropic_api_key}</div>
+            )}
+          </div>
+
+          <div style={sectionCardStyle()}>
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>OpenAI API Key</div>
+              <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+                {openaiMasked ? `Stored locally as ${openaiMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_OPENAI_API_KEY."}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="password"
+                placeholder="sk-proj-…"
+                value={values.openai_api_key || ""}
+                onChange={(e) => setValues((current) => ({ ...current, openai_api_key: e.target.value }))}
+                style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+              />
+              <button
+                className="refresh-btn"
+                style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.openai_api_key)) }}
+                onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", (values.openai_api_key || "").trim()).then(() => undefined))}
+                disabled={saving.openai_api_key || !(values.openai_api_key || "").trim()}
+              >
+                {saved.openai_api_key ? "✓ Saved" : saving.openai_api_key ? "…" : "Update"}
+              </button>
+              <button
+                className="refresh-btn"
+                style={{ padding: "4px 12px", minWidth: 84 }}
+                onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", "").then(() => undefined))}
+                disabled={saving.openai_api_key || !openaiMasked}
+              >
+                Clear
+              </button>
+            </div>
+            {errors.openai_api_key && (
+              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.openai_api_key}</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: "0.88rem", color: "#f4f4f5", fontWeight: 600 }}>Skills</div>
+          <div style={{ fontSize: "0.74rem", color: "#666", marginTop: 2 }}>
+            Runtime capabilities exposed to the engine and apps.
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
+          <div style={sectionCardStyle()}>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Web Browser</div>
+              <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+                Structured Playwright automation with allowlists, screenshots and text extraction.
               </div>
             </div>
 
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
-              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Provider</span>
-                <select
-                  value={provider}
-                  onChange={(e) => updateRuntimeProvider(scope, normalizeProvider(e.target.value))}
-                  style={{ minWidth: 200, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "7px 10px", fontFamily: "inherit", fontSize: "0.82rem" }}
-                >
-                  <option value="anthropic">Anthropic</option>
-                  <option value="bedrock">Amazon Bedrock</option>
-                  <option value="openai">OpenAI</option>
-                </select>
-              </label>
-
-              <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 280px" }}>
-                <span style={{ fontSize: "0.75rem", color: "#8b8b8b" }}>Model</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ fontSize: "0.78rem", color: "#d4d4d8" }}>Enabled</span>
                 <input
-                  type="text"
-                  value={values[RUNTIME_KEYS[scope].model] ?? model}
-                  placeholder={defaultModelForProvider(provider)}
-                  onChange={(e) => setValues((current) => ({ ...current, [RUNTIME_KEYS[scope].model]: e.target.value }))}
-                  style={{ minWidth: 0, width: "100%", background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                  type="checkbox"
+                  checked={browserEnabled}
+                  onChange={(e) => setValues((current) => ({
+                    ...current,
+                    [SKILL_FIELDS.browserEnabled]: e.target.checked ? "true" : "false",
+                  }))}
                 />
               </label>
 
-              <button
-                className="refresh-btn"
-                style={{ padding: "6px 14px", minWidth: 88, ...statusStyles(Boolean(saved[`${scope}_runtime`])) }}
-                onClick={() => runSave(`${scope}_runtime`, () => saveRuntime(scope, provider, values[RUNTIME_KEYS[scope].model] || model))}
-                disabled={saving[`${scope}_runtime`]}
-              >
-                {saved[`${scope}_runtime`] ? "✓ Saved" : saving[`${scope}_runtime`] ? "…" : "Save"}
-              </button>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: "0.76rem", color: "#d4d4d8" }}>Timeout (seconds)</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={browserTimeout}
+                  onChange={(e) => setValues((current) => ({ ...current, [SKILL_FIELDS.browserTimeout]: e.target.value }))}
+                  style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                />
+              </label>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: "0.76rem", color: "#d4d4d8" }}>Allowed domains</span>
+                <input
+                  type="text"
+                  value={browserAllowlist}
+                  placeholder="example.com, docs.example.com"
+                  onChange={(e) => setValues((current) => ({ ...current, [SKILL_FIELDS.browserAllowlist]: e.target.value }))}
+                  style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                />
+                <span style={{ fontSize: "0.72rem", color: "#666", lineHeight: 1.45 }}>
+                  Leave blank to allow any domain. You can also paste a JSON array if you prefer.
+                </span>
+              </label>
+
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  className="refresh-btn"
+                  style={{ padding: "6px 14px", minWidth: 96, ...statusStyles(Boolean(saved.browser_skill)) }}
+                  onClick={() => runSave("browser_skill", async () => {
+                    await persistSetting(SKILL_FIELDS.browserEnabled, browserEnabled ? "true" : "false");
+                    await persistSetting(SKILL_FIELDS.browserTimeout, browserTimeout.trim() || "15");
+                    await persistSetting(SKILL_FIELDS.browserAllowlist, browserAllowlist.trim());
+                  })}
+                  disabled={saving.browser_skill}
+                >
+                  {saved.browser_skill ? "✓ Saved" : saving.browser_skill ? "…" : "Save Skill"}
+                </button>
+              </div>
             </div>
 
-            <div style={{ marginTop: 10, fontSize: "0.75rem", color: "#666", lineHeight: 1.5 }}>
-              {runtimeProviderHelp(scope, provider)}
-            </div>
-
-            {errors[`${scope}_runtime`] && (
-              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors[`${scope}_runtime`]}</div>
+            {errors.browser_skill && (
+              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.browser_skill}</div>
             )}
           </div>
-        ))}
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
-        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Anthropic API Key</div>
-            <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
-              {anthropicMasked ? `Stored locally as ${anthropicMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_ANTHROPIC_API_KEY."}
+          <div style={sectionCardStyle()}>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>Send Email</div>
+              <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
+                Transactional email delivery through Resend.
+              </div>
             </div>
-          </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="password"
-              placeholder="sk-ant-…"
-              value={values.anthropic_api_key || ""}
-              onChange={(e) => setValues((current) => ({ ...current, anthropic_api_key: e.target.value }))}
-              style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
-            />
-            <button
-              className="refresh-btn"
-              style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.anthropic_api_key)) }}
-              onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", (values.anthropic_api_key || "").trim()).then(() => undefined))}
-              disabled={saving.anthropic_api_key || !(values.anthropic_api_key || "").trim()}
-            >
-              {saved.anthropic_api_key ? "✓ Saved" : saving.anthropic_api_key ? "…" : "Update"}
-            </button>
-            <button
-              className="refresh-btn"
-              style={{ padding: "4px 12px", minWidth: 84 }}
-              onClick={() => runSave("anthropic_api_key", () => persistSetting("anthropic_api_key", "").then(() => undefined))}
-              disabled={saving.anthropic_api_key || !anthropicMasked}
-            >
-              Clear
-            </button>
-          </div>
-          {errors.anthropic_api_key && (
-            <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.anthropic_api_key}</div>
-          )}
-        </div>
 
-        <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, padding: "14px 16px" }}>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: "0.85rem", color: "#e0e0e0", fontWeight: 500 }}>OpenAI API Key</div>
-            <div style={{ fontSize: "0.75rem", color: "#666", marginTop: 2 }}>
-              {openaiMasked ? `Stored locally as ${openaiMasked}. Enter a new key to replace it.` : "No local override saved. Leave blank to use ENGINE_OPENAI_API_KEY."}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ fontSize: "0.78rem", color: "#d4d4d8" }}>Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={emailEnabled}
+                  onChange={(e) => setValues((current) => ({
+                    ...current,
+                    [SKILL_FIELDS.emailEnabled]: e.target.checked ? "true" : "false",
+                  }))}
+                />
+              </label>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: "0.76rem", color: "#d4d4d8" }}>Resend API Key</span>
+                <input
+                  type="password"
+                  placeholder="re_..."
+                  value={values[SKILL_FIELDS.emailApiKey] || ""}
+                  onChange={(e) => setValues((current) => ({ ...current, [SKILL_FIELDS.emailApiKey]: e.target.value }))}
+                  style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                />
+                <span style={{ fontSize: "0.72rem", color: "#666", lineHeight: 1.45 }}>
+                  {resendMasked
+                    ? `Stored locally as ${resendMasked}. Enter a new key to replace it.`
+                    : "No local Resend key stored yet."}
+                </span>
+              </label>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: "0.76rem", color: "#d4d4d8" }}>Default From Address</span>
+                <input
+                  type="email"
+                  placeholder="noreply@yourdomain.com"
+                  value={emailDefaultFrom}
+                  onChange={(e) => setValues((current) => ({ ...current, [SKILL_FIELDS.emailFrom]: e.target.value }))}
+                  style={{ background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
+                />
+              </label>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="refresh-btn"
+                  style={{ padding: "6px 14px", minWidth: 96, ...statusStyles(Boolean(saved.email_skill)) }}
+                  onClick={() => runSave("email_skill", async () => {
+                    await persistSetting(SKILL_FIELDS.emailEnabled, emailEnabled ? "true" : "false");
+                    if ((values[SKILL_FIELDS.emailApiKey] || "").trim()) {
+                      await persistSetting(SKILL_FIELDS.emailApiKey, (values[SKILL_FIELDS.emailApiKey] || "").trim());
+                    }
+                    await persistSetting(SKILL_FIELDS.emailFrom, emailDefaultFrom.trim());
+                  })}
+                  disabled={saving.email_skill}
+                >
+                  {saved.email_skill ? "✓ Saved" : saving.email_skill ? "…" : "Save Skill"}
+                </button>
+                <button
+                  className="refresh-btn"
+                  style={{ padding: "6px 14px", minWidth: 96 }}
+                  onClick={() => runSave("email_skill", async () => {
+                    await persistSetting(SKILL_FIELDS.emailApiKey, "");
+                  })}
+                  disabled={saving.email_skill || !resendMasked}
+                >
+                  Clear API Key
+                </button>
+              </div>
             </div>
+
+            {errors.email_skill && (
+              <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.email_skill}</div>
+            )}
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="password"
-              placeholder="sk-proj-…"
-              value={values.openai_api_key || ""}
-              onChange={(e) => setValues((current) => ({ ...current, openai_api_key: e.target.value }))}
-              style={{ flex: "1 1 260px", minWidth: 0, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, color: "#e0e0e0", padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}
-            />
-            <button
-              className="refresh-btn"
-              style={{ padding: "4px 12px", minWidth: 84, ...statusStyles(Boolean(saved.openai_api_key)) }}
-              onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", (values.openai_api_key || "").trim()).then(() => undefined))}
-              disabled={saving.openai_api_key || !(values.openai_api_key || "").trim()}
-            >
-              {saved.openai_api_key ? "✓ Saved" : saving.openai_api_key ? "…" : "Update"}
-            </button>
-            <button
-              className="refresh-btn"
-              style={{ padding: "4px 12px", minWidth: 84 }}
-              onClick={() => runSave("openai_api_key", () => persistSetting("openai_api_key", "").then(() => undefined))}
-              disabled={saving.openai_api_key || !openaiMasked}
-            >
-              Clear
-            </button>
-          </div>
-          {errors.openai_api_key && (
-            <div style={{ marginTop: 6, fontSize: "0.75rem", color: "#ef4444" }}>{errors.openai_api_key}</div>
-          )}
         </div>
       </div>
 

@@ -5,6 +5,7 @@ import pytest
 from app.system_settings import (
     build_default_system_settings,
     ensure_default_system_settings,
+    mask_setting_value,
     repair_legacy_budget_value,
     resolve_runtime_model,
     resolve_runtime_provider,
@@ -43,6 +44,8 @@ def test_default_settings_include_engine_budget_keys():
         "engine_daily_failed_evolutions_limit",
         "engine_daily_task_attempt_limit",
         "engine_daily_usage_snapshot",
+        "skill_browser_enabled",
+        "skill_email_resend_api_key",
     ):
         assert key in defaults
 
@@ -177,3 +180,7 @@ async def test_ensure_default_system_settings_repairs_legacy_budget_rows_without
     compiled_params = update_statements[0].compile().params
     assert compiled_params["value"] == "240"
     assert db.committed is True
+
+
+def test_mask_setting_value_masks_skill_secrets():
+    assert mask_setting_value("skill_email_resend_api_key", "re_test_secret") == "**********cret"

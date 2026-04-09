@@ -67,15 +67,18 @@ class DataManagerAgent(BaseAgent):
             context_chars=len(repo_map.to_context_string()),
         )
 
-        # Fetch inter-session lessons (fire-and-forget: returns [] if backend unreachable)
+        # Fetch inter-session lessons and runtime skills inventory.
         lessons = []
+        available_skills = []
         if self.event_reporter:
             lessons = await self.event_reporter.fetch_lessons()
+            available_skills = await self.event_reporter.fetch_skills()
 
         return ctx.model_copy(
             update={
                 "repo_map": repo_map,
                 "lessons": lessons,
+                "available_skills": available_skills,
                 "status": EvolutionStatus.GENERATING,
             }
         )
