@@ -6,7 +6,6 @@ from app.system_settings import (
     build_default_system_settings,
     ensure_default_system_settings,
     mask_setting_value,
-    repair_legacy_budget_value,
     resolve_runtime_model,
     resolve_runtime_provider,
 )
@@ -119,13 +118,6 @@ async def test_ensure_default_system_settings_skips_when_table_missing():
 
     assert db.executed is False
     assert db.committed is False
-
-
-def test_repair_legacy_budget_value_only_updates_old_defaults():
-    assert repair_legacy_budget_value("engine_daily_llm_calls_limit", "60") == "240"
-    assert repair_legacy_budget_value("engine_daily_input_tokens_limit", "500000") == "1500000"
-    assert repair_legacy_budget_value("engine_daily_output_tokens_limit", "120000") == "250000"
-    assert repair_legacy_budget_value("engine_daily_llm_calls_limit", "500") == "500"
 
 
 def test_mask_setting_value_masks_skill_secrets():

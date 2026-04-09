@@ -53,7 +53,7 @@ async def test_data_manager_attaches_available_skills_to_context(tmp_path):
                 )
             ]
 
-    agent = DataManagerAgent(operational_plane_path=app_root, event_reporter=_Reporter())
+    agent = DataManagerAgent(managed_app_path=app_root, event_reporter=_Reporter())
 
     ctx = await agent.execute(create_context("Inspect runtime skills"))
 
