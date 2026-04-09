@@ -103,5 +103,6 @@ def test_protected_framework_manifest_syncs_purpose_shell_frontend():
     manifest = (REPO_ROOT / "protected_framework_files.txt").read_text(encoding="utf-8")
 
     assert "frontend/src/components/WelcomePurpose.tsx" in manifest
+    assert "frontend/src/components/SettingsView.tsx" in manifest
     assert "frontend/src/components/evolution/PurposeViewer.tsx" in manifest
     assert "frontend/src/hooks/useAuth.ts" in manifest
