@@ -74,6 +74,7 @@ IMPORTANT CONSTRAINTS:
   `requires_migration=true`.
 - Use the current Alembic revision chain from the repo map when planning migrations.
   New migrations must extend the current head; never start a second root migration.
+- Keep Alembic `revision` identifiers short and stable: 32 characters maximum.
 - When an app currently has no features, prefer a thin vertical slice that becomes
   observable through an existing API or UI over backend-only scaffolding.
 - Treat `frontend/src/App.tsx` and `frontend/src/App.css` as protected desktop shell

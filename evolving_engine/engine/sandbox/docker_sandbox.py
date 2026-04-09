@@ -9,6 +9,7 @@ Validation pipeline:
 """
 
 import asyncio
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -48,6 +49,9 @@ _DESKTOP_SHELL_KEYWORDS = (
     "window manager",
     "dock",
 )
+
+_ALEMBIC_REVISION_RE = re.compile(r"^\s*revision\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+_ALEMBIC_MAX_REVISION_LENGTH = 32
 
 _REQUIRED_DESKTOP_MENU_LABELS = (
     "New Inception",
@@ -240,6 +244,36 @@ def _validate_plan_contract(context: EvolutionContext) -> list[str]:
     return errors
 
 
+def _validate_generated_alembic_revisions(context: EvolutionContext) -> list[str]:
+    """Reject Alembic revisions that cannot be applied safely."""
+    errors: list[str] = []
+
+    for generated_file in context.generated_files:
+        relative_path = generated_file.file_path.lstrip("/")
+        if not relative_path.startswith("backend/alembic/versions/"):
+            continue
+        if generated_file.action == "delete":
+            continue
+
+        match = _ALEMBIC_REVISION_RE.search(generated_file.content)
+        if not match:
+            errors.append(
+                "Alembic migration files must declare a `revision = \"...\"` value: "
+                f"{relative_path}."
+            )
+            continue
+
+        revision = match.group(1).strip()
+        if len(revision) > _ALEMBIC_MAX_REVISION_LENGTH:
+            errors.append(
+                "Alembic revision identifiers must be 32 characters or fewer so they fit "
+                "the alembic_version.version_num column. "
+                f"Found `{revision}` ({len(revision)} chars) in {relative_path}."
+            )
+
+    return errors
+
+
 def _extract_frontend_app_root(relative_path: str) -> str | None:
     """Return the top-level app module directory for frontend/src/apps/* paths."""
     normalized = relative_path.lstrip("/").replace("\\", "/")
@@ -402,7 +436,16 @@ class DockerSandbox(BaseSandbox):
         if contract_errors:
             errors.extend(contract_errors)
             suggestions.append(
-                "Ensure the generator emits every planned file, including required Alembic migrations."
+                "Ensure the generator emits every planned file, including required "
+                "Alembic migrations."
+            )
+
+        alembic_revision_errors = _validate_generated_alembic_revisions(context)
+        if alembic_revision_errors:
+            errors.extend(alembic_revision_errors)
+            suggestions.append(
+                "Keep Alembic revision ids short and explicit; they must declare "
+                "`revision = ...` and fit within 32 characters."
             )
 
         structure_errors = _validate_frontend_app_structure(sandbox_app, context)
@@ -447,7 +490,8 @@ class DockerSandbox(BaseSandbox):
             if not alembic_ok:
                 errors.extend(alembic_errors)
                 suggestions.append(
-                    "Alembic migrations must form a single linear head and extend the current revision chain."
+                    "Alembic migrations must form a single linear head and extend "
+                    "the current revision chain."
                 )
 
         # Stage 2.5: Backend startup smoke test
@@ -456,7 +500,9 @@ class DockerSandbox(BaseSandbox):
             smoke_ok, smoke_errors = await self._run_backend_import_smoke_test()
             if not smoke_ok:
                 errors.extend(smoke_errors)
-                suggestions.append("Backend changes must import app.main successfully before deploy")
+                suggestions.append(
+                    "Backend changes must import app.main successfully before deploy"
+                )
 
         # Stage 3: Integration test (only if build passed)
         tests_ok = "backend" not in impacted_services
@@ -517,7 +563,7 @@ class DockerSandbox(BaseSandbox):
                     errors.append(f"Python linting errors:\n{stdout.decode()}")
             except FileNotFoundError:
                 logger.warning("static_analysis.ruff_not_found")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 errors.append("Python linting timed out")
 
         return len(errors) == 0, errors

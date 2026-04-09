@@ -8,6 +8,7 @@ from engine.models.evolution import EvolutionPlan, FileChange, GeneratedFile
 from engine.sandbox.docker_sandbox import (
     DockerSandbox,
     _validate_frontend_app_structure,
+    _validate_generated_alembic_revisions,
     _validate_plan_contract,
     _validate_platform_contract_files,
 )
@@ -199,6 +200,51 @@ def test_contract_rejects_backend_shell_overwrite():
     errors = _validate_plan_contract(ctx)
 
     assert any("Backend shell files are protected" in error for error in errors)
+
+
+def test_generated_alembic_revision_rejects_missing_revision_assignment():
+    """Alembic migrations must declare the revision identifier explicitly."""
+    ctx = create_context("Add projects table")
+    ctx = ctx.model_copy(
+        update={
+            "generated_files": [
+                GeneratedFile(
+                    file_path="backend/alembic/versions/009_add_projects.py",
+                    content="down_revision = '008_system_notifications'\n",
+                    action="create",
+                    layer="database",
+                )
+            ]
+        }
+    )
+
+    errors = _validate_generated_alembic_revisions(ctx)
+
+    assert any("must declare a `revision" in error for error in errors)
+
+
+def test_generated_alembic_revision_rejects_revision_longer_than_32_chars():
+    """Alembic revision ids must fit the alembic_version.version_num column."""
+    ctx = create_context("Add projects table")
+    ctx = ctx.model_copy(
+        update={
+            "generated_files": [
+                GeneratedFile(
+                    file_path="backend/alembic/versions/009_add_ai_projects_hub_projects.py",
+                    content=(
+                        'revision = "009_create_ai_projects_hub_projects"\n'
+                        'down_revision = "008_system_notifications"\n'
+                    ),
+                    action="create",
+                    layer="database",
+                )
+            ]
+        }
+    )
+
+    errors = _validate_generated_alembic_revisions(ctx)
+
+    assert any("32 characters or fewer" in error for error in errors)
 
 
 def _write(tmp_path: Path, relative_path: str, content: str) -> None:

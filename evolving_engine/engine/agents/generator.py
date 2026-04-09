@@ -95,6 +95,8 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 - Use a concrete filename from the plan, and include both `upgrade()` and `downgrade()`.
 - Use the Alembic revision chain from the repo map. The new migration must set a unique
   `revision` and `down_revision` equal to the current single head revision.
+- Keep the Alembic `revision` identifier at 32 characters or fewer so it fits the
+  `alembic_version.version_num` column in PostgreSQL.
 - Never use `down_revision = None` unless the repo has no existing Alembic revisions.
 - Never create a second Alembic head.
 - Keep migrations backwards-compatible and deterministic. Prefer `op.create_table`,
