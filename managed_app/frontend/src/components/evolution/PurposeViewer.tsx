@@ -74,6 +74,22 @@ function RequirementsList({ title, items }: { title: string; items: string[] }) 
   );
 }
 
+function cleanedPurposeDescription(parsed: PurposeData): string {
+  const description = (parsed.identity?.description || "").trim();
+  const name = (parsed.identity?.name || "").trim();
+  if (!description || !name) return description;
+
+  const normalizedDescription = description.toLowerCase();
+  const normalizedName = name.toLowerCase();
+  if (normalizedDescription === normalizedName) {
+    return "";
+  }
+  if (normalizedDescription.startsWith(`${normalizedName} `)) {
+    return description.slice(name.length).trimStart();
+  }
+  return description;
+}
+
 function isPlainTextPurpose(parsed: PurposeData | null): boolean {
   if (!parsed) return false;
   return (
@@ -96,6 +112,7 @@ export function PurposeViewer() {
 
   const parsed = parsePurposeYaml(purpose.content_yaml);
   const plainTextPurpose = isPlainTextPurpose(parsed);
+  const description = parsed ? cleanedPurposeDescription(parsed) : "";
 
   return (
     <div className="card purpose-viewer">
@@ -108,7 +125,7 @@ export function PurposeViewer() {
         <>
           <div className="purpose-identity">
             {!plainTextPurpose && <strong>{parsed.identity?.name}</strong>}
-            <p>{parsed.identity?.description}</p>
+            {description && <p>{description}</p>}
           </div>
           {!plainTextPurpose && (
             <>

@@ -75,6 +75,7 @@ _SEVERITY_ORDER = {
     "critical": 3,
 }
 _PLAIN_TEXT_PURPOSE_NAME = "User-Defined Purpose"
+_PLAIN_TEXT_SECTION_DIVIDER = "⸻"
 
 
 def _notification_message_hash(message: str) -> str:
@@ -85,11 +86,46 @@ def _normalize_inline_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _derive_purpose_name(purpose_text: str) -> str:
-    for raw_line in purpose_text.splitlines():
-        candidate = _normalize_inline_text(raw_line.lstrip("-*•").strip())
-        if not candidate:
+def _clean_purpose_line(raw_line: str) -> str:
+    stripped = raw_line.strip()
+    bullet_match = re.match(r"^[-*•]\s+(.*)$", stripped)
+    return _normalize_inline_text(bullet_match.group(1) if bullet_match else stripped)
+
+
+def _is_section_divider(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    divider_chars = {"-", "—", "–", "_", "⸻"}
+    return all(char in divider_chars for char in stripped)
+
+
+def _extract_purpose_title_and_body(purpose_text: str) -> tuple[str | None, list[str]]:
+    cleaned_lines: list[str] = []
+    for raw_line in purpose_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or _is_section_divider(stripped):
             continue
+        cleaned = _clean_purpose_line(raw_line)
+        if cleaned:
+            cleaned_lines.append(cleaned)
+
+    if not cleaned_lines:
+        return None, []
+
+    first_line = cleaned_lines[0]
+    remaining_lines = cleaned_lines[1:]
+    if remaining_lines and len(first_line) <= 80 and first_line[-1:] not in {".", "!", "?"}:
+        return first_line, remaining_lines
+    return None, cleaned_lines
+
+
+def _derive_purpose_name(purpose_text: str) -> str:
+    title, body_lines = _extract_purpose_title_and_body(purpose_text)
+    if title:
+        return title
+
+    for candidate in body_lines:
         first_sentence = re.split(r"(?<=[.!?])\s+", candidate, maxsplit=1)[0].strip(" .,:;-")
         if 3 <= len(first_sentence) <= 80:
             return first_sentence
@@ -144,27 +180,41 @@ def _serialize_purpose_yaml(
 
 def _build_purpose_yaml_from_text(purpose_text: str, version: int) -> str:
     bullet_requirements: list[str] = []
-    normalized_lines: list[str] = []
+    title, body_lines = _extract_purpose_title_and_body(purpose_text)
+    description_lines: list[str] = []
 
     for raw_line in purpose_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         stripped = raw_line.strip()
-        if not stripped:
+        if not stripped or _is_section_divider(stripped):
             continue
         bullet_match = re.match(r"^[-*•]\s+(.*)$", stripped)
-        cleaned = _normalize_inline_text(bullet_match.group(1) if bullet_match else stripped)
+        cleaned = _clean_purpose_line(raw_line)
         if not cleaned:
             continue
-        normalized_lines.append(cleaned)
         if bullet_match:
             bullet_requirements.append(cleaned)
 
-    if not normalized_lines:
+    if title:
+        description_lines = body_lines
+    else:
+        description_lines = body_lines
+
+    if not description_lines and title:
+        description_lines = [title]
+
+    if not description_lines:
         raise ValueError("Purpose text cannot be empty.")
 
-    description = " ".join(normalized_lines)
+    description = " ".join(description_lines)
+    derived_name = _derive_purpose_name(purpose_text)
+    if derived_name != _PLAIN_TEXT_PURPOSE_NAME:
+        prefix = f"{derived_name} "
+        if description.startswith(prefix):
+            description = description[len(prefix):].lstrip()
+
     return _serialize_purpose_yaml(
         version=version,
-        name=_derive_purpose_name(purpose_text),
+        name=derived_name,
         description=description,
         functional_requirements=bullet_requirements,
     )

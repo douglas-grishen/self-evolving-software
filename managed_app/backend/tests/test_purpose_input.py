@@ -62,6 +62,27 @@ def test_build_purpose_yaml_from_text_uses_generic_structure_and_extracts_bullet
     assert "technical_requirements: []" in yaml_text
 
 
+def test_build_purpose_yaml_from_text_uses_heading_as_name_without_duplication():
+    yaml_text = _build_purpose_yaml_from_text(
+        (
+            "Core Purpose\n\n"
+            "Design, improve, and continuously evolve an autonomous software platform.\n\n"
+            "⸻\n\n"
+            "Short Version\n\n"
+            "Continuously evolve into a public web platform."
+        ),
+        version=1,
+    )
+
+    assert 'name: "Core Purpose"' in yaml_text
+    assert (
+        'description: "Design, improve, and continuously evolve an autonomous '
+        'software platform. Short Version Continuously evolve into a public '
+        'web platform."'
+    ) in yaml_text
+    assert 'description: "Core Purpose Design' not in yaml_text
+
+
 @pytest.mark.asyncio
 async def test_create_purpose_converts_plain_text_before_persisting():
     db = _FakePurposeSession()
