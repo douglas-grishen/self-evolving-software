@@ -2,7 +2,7 @@ version: 0.0
 os: linux
 files:
   - source: /
-    destination: /opt/self-evolving-software
+    destination: /opt/self-evolving-software-release
 hooks:
   ApplicationStop:
     - location: deploy/scripts/stop.sh

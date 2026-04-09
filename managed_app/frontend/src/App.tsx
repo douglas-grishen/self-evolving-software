@@ -6,6 +6,7 @@ import { DatabaseView } from "./components/DatabaseView";
 import { DesktopIcon } from "./components/DesktopIcon";
 import { HealthCheck } from "./components/HealthCheck";
 import { LoginScreen } from "./components/LoginScreen";
+import { NotificationsView } from "./components/NotificationsView";
 import { SettingsView } from "./components/SettingsView";
 import { ChatView } from "./components/ChatView";
 import { CostView } from "./components/CostView";
@@ -14,13 +15,26 @@ import { WelcomePurpose } from "./components/WelcomePurpose";
 import { EvolutionTimeline } from "./components/evolution/EvolutionTimeline";
 import { InceptionPanel } from "./components/evolution/InceptionPanel";
 import { PurposeViewer } from "./components/evolution/PurposeViewer";
+import { RealTimeView } from "./components/evolution/RealTimeView";
 import { useAuth } from "./hooks/useAuth";
 import { useApps } from "./hooks/useAppsApi";
 import { useEvolutionStatus } from "./hooks/useEvolutionApi";
 import { useSystemInfo } from "./hooks/useSystemInfo";
 import "./App.css";
 
-type SystemWindowId = "inception" | "inceptions" | "timeline" | "purpose" | "architecture" | "health" | "settings" | "tasks" | "chat" | "database" | "cost";
+type SystemWindowId =
+  | "inceptions"
+  | "realtime"
+  | "timeline"
+  | "purpose"
+  | "architecture"
+  | "health"
+  | "settings"
+  | "tasks"
+  | "chat"
+  | "database"
+  | "cost"
+  | "notifications";
 type WindowId = SystemWindowId | `app:${string}`;
 
 function ToolbarStatus() {
@@ -48,6 +62,19 @@ function App() {
   const { deploy_version, version } = useSystemInfo();
   const [activeWindow, setActiveWindow] = useState<WindowId | null>(null);
   const [purposeDismissed, setPurposeDismissed] = useState(false);
+
+  if (auth.isLoading && auth.token) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="login-header">
+            <h1 className="login-title">Self-Evolving Software</h1>
+            <p className="login-subtitle">Validating session...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!auth.isAuthenticated) {
     return (
@@ -82,11 +109,11 @@ function App() {
           <ToolbarStatus />
         </div>
         <div className="menubar-center">
-          <button className="menubar-item" onClick={() => toggle("inception")}>
-            New Inception
-          </button>
           <button className="menubar-item" onClick={() => toggle("inceptions")}>
             Inceptions
+          </button>
+          <button className="menubar-item" onClick={() => toggle("realtime")}>
+            Real Time
           </button>
           <button className="menubar-item" onClick={() => toggle("timeline")}>
             Timeline
@@ -96,6 +123,12 @@ function App() {
           </button>
           <button className="menubar-item" onClick={() => toggle("tasks")}>
             Tasks
+          </button>
+          <button className="menubar-item menubar-item--with-badge" onClick={() => toggle("notifications")}>
+            Notifications
+            {status && status.active_notifications > 0 && (
+              <span className="menubar-item-badge">{status.active_notifications}</span>
+            )}
           </button>
           <button className="menubar-item" onClick={() => toggle("chat")}>
             Chat
@@ -164,15 +197,15 @@ function App() {
       )}
 
       {/* System windows */}
-      {activeWindow === "inception" && (
-        <AppWindow title="New Inception" onClose={close} width="560px" height="420px">
-          <InceptionPanel mode="form-only" />
+      {activeWindow === "inceptions" && (
+        <AppWindow title="Inceptions" onClose={close} width="640px" height="560px">
+          <InceptionPanel mode="list-only" />
         </AppWindow>
       )}
 
-      {activeWindow === "inceptions" && (
-        <AppWindow title="Inception History" onClose={close} width="640px" height="560px">
-          <InceptionPanel mode="list-only" />
+      {activeWindow === "realtime" && (
+        <AppWindow title="Evolution Real Time" onClose={close} width="760px" height="620px">
+          <RealTimeView />
         </AppWindow>
       )}
 
@@ -191,6 +224,12 @@ function App() {
       {activeWindow === "tasks" && (
         <AppWindow title="Evolution Tasks" onClose={close} width="680px" height="580px">
           <TasksView />
+        </AppWindow>
+      )}
+
+      {activeWindow === "notifications" && (
+        <AppWindow title="System Notifications" onClose={close} width="640px" height="520px">
+          <NotificationsView />
         </AppWindow>
       )}
 

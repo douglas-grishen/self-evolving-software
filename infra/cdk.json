@@ -1,9 +1,10 @@
 {
-  "app": "python3 app.py",
+  "app": "bash ../scripts/run-python.sh app.py",
   "context": {
     "@aws-cdk/core:stackRelativeExports": true,
 
     "project_name": "self-evolving-software",
+    "instance_key": "base",
     "instance_type": "t3.medium",
     "ebs_data_size_gb": 30,
     "github_branch": "main",

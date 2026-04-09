@@ -47,5 +47,5 @@ components:
     deploy: codedeploy
     cdk_entry: infra/app.py
 
-initial_purpose_ref: purpose.yaml
+initial_purpose_ref: ui:first-boot
 git_sha: ""  # Populated automatically at deploy time

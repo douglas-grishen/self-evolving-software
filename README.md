@@ -27,10 +27,10 @@ An experimental framework for building software systems that can analyze their o
 
 ## Overview
 
-This project implements a **MAPE-K** (Monitor, Analyze, Plan, Execute, Knowledge) architecture with a strict separation of concerns between two systems:
+This project implements a **MAPE-K** (Monitor, Analyze, Plan, Execute, Knowledge) architecture with a strict separation of concerns between two planes:
 
-1. **Managed App** — A standard web application (React + FastAPI + PostgreSQL)
-2. **Evolving Engine** — A multi-agent AI system that receives natural language requests, analyzes the managed app's codebase, generates code changes, validates them in a sandbox, and deploys them autonomously
+1. **Operational Plane** — The product runtime in `managed_app/`: a standard web application built with React, FastAPI, and PostgreSQL
+2. **Evolution Plane** — The adaptive control system in `evolving_engine/`: a multi-agent AI engine that analyzes the runtime and codebase, generates improvements, validates them in a sandbox, and deploys them autonomously
 
 The engine acts as an autonomous development team: it reads your requirements, understands the codebase, writes the code, tests it, and ships it.
 
@@ -38,7 +38,7 @@ The engine acts as an autonomous development team: it reads your requirements, u
 
 ## Architecture
 
-This system implements the **MAPE-K** (Monitor, Analyze, Plan, Execute, Knowledge) pattern for self-adaptive software. The Autonomic Manager observes the Managed System **at runtime**, detects anomalies, generates fixes, validates them in a sandbox, and deploys them — autonomously and continuously.
+This system implements the **MAPE-K** pattern inside the **Evolution Plane**. The Evolution Plane observes the **Operational Plane** at runtime, detects anomalies, generates fixes, validates them in a sandbox, and deploys them continuously.
 
 ```
   User request (optional)              Runtime anomaly (autonomous)
@@ -46,7 +46,7 @@ This system implements the **MAPE-K** (Monitor, Analyze, Plan, Execute, Knowledg
           └──────────────────┬───────────────────┘
                              ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│  AUTONOMIC MANAGER              (autonomic-manager Docker network)  │
+│  EVOLUTION PLANE                 (evolution-plane Docker network)   │
 │                                                                    │
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │  Continuous MAPE-K loop                                     │  │
@@ -75,7 +75,7 @@ This system implements the **MAPE-K** (Monitor, Analyze, Plan, Execute, Knowledg
            │  control-plane Docker network
            │  GET /api/v1/monitor/{health,metrics,errors,schema}
 ┌──────────┼─────────────────────────────────────────────────────────┐
-│  MANAGED SYSTEM                  (managed-system Docker network)    │
+│  OPERATIONAL PLANE              (operational-plane Docker network)  │
 │                                                                    │
 │  ┌────────────┐  ┌────────────────────────┐  ┌─────────────────┐  │
 │  │ PostgreSQL │↔ │ Backend  (FastAPI)      │↔ │ Frontend        │──┼──► Users
@@ -110,9 +110,11 @@ The engine mounts the **full repository** and can write to both `managed_app/` a
 
 | Network | Connected services | Purpose |
 |---------|-------------------|---------|
-| `managed-system` | postgres ↔ backend ↔ frontend | Internal Managed System traffic |
-| `control-plane` | backend ↔ engine | Runtime monitoring (read-only observation) |
-| `autonomic-manager` | engine | LLM calls, Docker sandbox, Git, AWS APIs |
+| `operational-plane` | postgres ↔ backend ↔ frontend | Operational Plane traffic |
+| `control-plane` | backend ↔ engine | Evolution Plane observation of runtime contracts |
+| `evolution-plane` | engine | Evolution Plane internals: LLM calls, Docker sandbox, Git, AWS APIs |
+
+During rollout the runtime observer still recognizes legacy subsystem labels (`managed-system`, `autonomic-manager`), but current deployments use plane-oriented names.
 
 ---
 
@@ -121,12 +123,12 @@ The engine mounts the **full repository** and can write to both `managed_app/` a
 ```
 self-evolving-software/
 │
-│── managed_app/                    # ── MANAGED SYSTEM ──────────────────────
+│── managed_app/                    # ── OPERATIONAL PLANE ───────────────────
 │   ├── frontend/                   # React + TypeScript (Vite), Nginx
 │   ├── backend/                    # FastAPI + SQLAlchemy + Alembic
 │   └── docker-compose.yml          # Standalone dev compose
 │
-│── evolving_engine/                # ── AUTONOMIC MANAGER ───────────────────
+│── evolving_engine/                # ── EVOLUTION PLANE ─────────────────────
 │   ├── engine/
 │   │   ├── agents/                 # Leader, DataManager, Generator, Validator
 │   │   ├── providers/              # Anthropic Claude, Amazon Bedrock
@@ -146,6 +148,9 @@ self-evolving-software/
 │   ├── appspec.yml                 # CodeDeploy application spec
 │   └── scripts/                    # stop.sh, install.sh, start.sh
 │
+├── framework_invariants.yaml       # Shared platform/safety rules for all instances
+├── contracts.example.yaml          # Example runtime contracts for mounted apps
+├── instances/                      # Optional private overlays (kept generic in OSS)
 ├── docker-compose.yml              # Local dev (both subsystems, separate nets)
 ├── docker-compose.prod.yml         # Production (EC2, MAPE-K network isolation)
 ├── Makefile                        # Common commands
@@ -163,6 +168,12 @@ self-evolving-software/
 - Docker and Docker Compose
 - An Anthropic API key ([console.anthropic.com](https://console.anthropic.com))
 
+The repository resolves Python through `scripts/run-python.sh` and prefers `./.venv/bin/python` when that virtual environment exists. If your default `python` is older, set `PYTHON` explicitly:
+
+```bash
+PYTHON=/path/to/python3.11 make setup
+```
+
 ### Quick Start
 
 ```bash
@@ -174,7 +185,7 @@ cd self-evolving-software
 cp .env.example .env
 # Edit .env and add your ENGINE_ANTHROPIC_API_KEY
 
-# Install all dependencies
+# Create the local .venv and install all dependencies
 make setup
 
 # Start the development stack
@@ -185,6 +196,12 @@ The managed app will be available at:
 - **Frontend:** http://localhost:5173
 - **Backend:** http://localhost:8000
 - **API docs:** http://localhost:8000/docs
+
+For production-style deployments and new instances, run the preflight first:
+
+```bash
+make preflight-instance
+```
 
 ### Running the Engine
 
@@ -206,10 +223,10 @@ make evolve REQ="Add a products CRUD with API endpoints and React component"
 cd evolving_engine
 
 # Dry run — generates and validates code, skips deployment
-python -m engine --dry-run "Add user authentication with JWT tokens"
+bash ../scripts/run-python.sh -m engine --dry-run "Add user authentication with JWT tokens"
 
 # Full run — generates, validates, commits, and triggers pipeline
-python -m engine "Add a /api/v1/products endpoint with CRUD operations"
+bash ../scripts/run-python.sh -m engine "Add a /api/v1/products endpoint with CRUD operations"
 ```
 
 ### CLI — Continuous mode (autonomous MAPE-K loop)
@@ -218,16 +235,16 @@ python -m engine "Add a /api/v1/products endpoint with CRUD operations"
 cd evolving_engine
 
 # Start the autonomous loop (polls every 60s by default)
-python -m engine --continuous
+bash ../scripts/run-python.sh -m engine --continuous
 
 # Override the monitoring interval
-python -m engine --continuous --interval 30
+bash ../scripts/run-python.sh -m engine --continuous --interval 30
 
 # Observe and plan but never deploy (useful for testing)
-python -m engine --continuous --dry-run
+bash ../scripts/run-python.sh -m engine --continuous --dry-run
 ```
 
-In continuous mode the engine runs indefinitely. Each iteration it polls the Managed System, evaluates runtime health, detects anomalies, and — if something needs fixing — autonomously generates, validates, and deploys the solution.
+In continuous mode the engine runs indefinitely. Each iteration it polls the Operational Plane, evaluates runtime health, detects anomalies, and, if something needs fixing, autonomously generates, validates, and deploys the solution.
 
 ### Makefile shortcuts
 
@@ -309,7 +326,31 @@ while running:
 
 ## Infrastructure
 
-Production runs on a **single EC2 instance** via Docker Compose. Both MAPE-K subsystems are deployed as containers on isolated Docker networks.
+Production runs on a **single EC2 instance** via Docker Compose. Both planes are deployed as containers on isolated Docker networks.
+
+The open-source baseline ships shared [framework_invariants.yaml](framework_invariants.yaml),
+[genesis.yaml](genesis.yaml), and [contracts.example.yaml](contracts.example.yaml).
+New instances do not receive a tracked business Purpose at deploy time; the first
+Purpose must be defined from the UI after bootstrap.
+
+The `instances/` folder is reserved for optional private overlays and should remain generic in the open-source repo. If you keep a local overlay under `instances/<instance_key>/`, it can define instance naming, public host, Genesis overrides, runtime contracts, and optional bootstrap files for the instance-local operational plane.
+
+Recommended hardening flow before a real instance:
+
+```bash
+bash scripts/create_instance.sh --instance-key <new-key> --connection-arn <arn>
+make preflight-instance
+make test-infra
+```
+
+`create_instance.sh` defaults to the current git `origin` and current local
+branch when it writes `infra/deploy.env`, and the EC2 bootstrap now waits for
+CodeDeploy before any framework code is promoted onto the host. That prevents a
+new instance from starting on stale code that lives only in `main` or in an
+older bootstrap checkout.
+
+Operational guidance for contracts, backups/restores, and external alerts lives
+in [docs/instance-operations.md](docs/instance-operations.md).
 
 | Stack | Resources |
 |-------|-----------|

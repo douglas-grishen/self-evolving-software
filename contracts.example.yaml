@@ -1,0 +1,65 @@
+# Framework-level probes for apps registry, capabilities, and chat are enforced
+# by the engine automatically. Add product-specific contracts here and then
+# point ENGINE_RUNTIME_CONTRACTS_PATH / RUNTIME_CONTRACTS_PATH at the copied file.
+#
+# When to add contracts:
+# - Every mounted app with a user-visible summary, list, search, or action route
+# - Any payload shape that the frontend depends on and cannot silently drift
+# - Any backend file that must continue existing when the frontend app is present
+#
+# Starter kit patterns:
+# 1. Read-only dashboard app: one GET summary probe with required JSON fields
+# 2. Search/list app: one POST search probe with required JSON and list fields
+# 3. Command app: one POST action route with accepted statuses such as 200/202/422
+apps: {}
+
+# Example A — read-only dashboard + search/list app:
+# apps:
+#   market-radar:
+#     platform_contract:
+#       required_file: backend/app/api/v1/market_radar.py
+#       markers:
+#         - 'APIRouter(prefix="/market-radar"'
+#         - '@router.get("/summary")'
+#         - '@router.post("/items/search")'
+#     probes:
+#       - method: GET
+#         path: /api/v1/market-radar/summary
+#         description: Market Radar summary endpoint
+#         required_json_fields:
+#           - regions
+#           - categories
+#       - method: POST
+#         path: /api/v1/market-radar/items/search
+#         description: Market Radar search endpoint
+#         json_body:
+#           page: 1
+#           page_size: 25
+#           filters:
+#             search_query: smoke-test
+#         required_json_fields:
+#           - items
+#           - total
+#           - page
+#           - page_size
+#         required_list_fields:
+#           - items
+#
+# Example B — command/action route:
+# apps:
+#   operator-console:
+#     platform_contract:
+#       required_file: backend/app/api/v1/operator_console.py
+#       markers:
+#         - 'APIRouter(prefix="/operator-console"'
+#         - '@router.post("/actions/reindex")'
+#     probes:
+#       - method: POST
+#         path: /api/v1/operator-console/actions/reindex
+#         description: Operator Console reindex action
+#         expected_statuses:
+#           - 200
+#           - 202
+#           - 422
+#         json_body:
+#           scope: smoke-test

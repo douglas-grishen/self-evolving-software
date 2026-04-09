@@ -3,6 +3,8 @@ interface StatusBadgeProps {
 }
 
 const STATUS_COLORS: Record<string, string> = {
+  idle: "#22c55e",
+  evolving: "#3b82f6",
   completed: "#22c55e",
   applied: "#22c55e",
   failed: "#ef4444",

@@ -82,6 +82,7 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
 ⛔ `backend/app/api/deps.py` — auth deps live in `app/auth.py`, not here.
 ⛔ `backend/app/api/v1/__init__.py` — do NOT modify the router registry file; the framework
    manages router registration.
+⛔ `backend/app/main.py` — backend startup shell; modifying it can prevent the API from booting.
 ⛔ `backend/app/models/__init__.py` — do NOT modify the models package init; the framework
    manages which models are loaded.
 ⛔ `backend/app/config.py` — core application settings; modifying this breaks Alembic and the
@@ -119,7 +120,7 @@ from app.models.apps import AppRecord, FeatureRecord, CapabilityRecord
   Reuse those exact asset paths; do not invent duplicate copies under app-module directories
   unless the plan explicitly migrates every consumer to the new location.
 - Match the desktop app's frontend module key to a slug of the app name (for example
-  `Competitive Intelligence` -> `competitive-intelligence`) so the shell can launch it reliably.
+  `Example App` -> `example-app`) so the shell can launch it reliably.
 - If the repository map reports a path conflict for a frontend app root, the safe move is to
   consolidate or stabilize that app instead of adding more files under a new variant path.
 - If a mounted app depends on backend endpoints, preserve that route contract. When the data
@@ -311,6 +312,7 @@ class CodeGeneratorAgent(BaseAgent):
         FORBIDDEN_EXACT = {
             "backend/app/api/deps.py",
             "backend/app/api/v1/__init__.py",  # framework manages router registration
+            "backend/app/main.py",             # backend shell/bootstrap entrypoint
             "backend/app/models/__init__.py",  # framework manages model registration
             "backend/app/config.py",           # core settings — engine overwrites break alembic
             "backend/alembic/env.py",          # alembic env — must not be overwritten

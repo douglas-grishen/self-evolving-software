@@ -3,8 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Evolution Events
@@ -99,9 +98,19 @@ class InceptionResponse(BaseModel):
 class PurposeCreate(BaseModel):
     """Payload the engine sends to store a purpose version."""
 
-    version: int
-    content_yaml: str
+    version: int = Field(ge=1)
+    content_yaml: Optional[str] = None
+    purpose_text: Optional[str] = None
     inception_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_input_source(self) -> "PurposeCreate":
+        """Require exactly one purpose input format."""
+        has_yaml = bool(self.content_yaml and self.content_yaml.strip())
+        has_text = bool(self.purpose_text and self.purpose_text.strip())
+        if has_yaml == has_text:
+            raise ValueError("Provide exactly one of content_yaml or purpose_text.")
+        return self
 
 
 class PurposeResponse(BaseModel):
@@ -206,6 +215,37 @@ class BacklogItemResponse(BacklogItemBase):
 
 
 # ---------------------------------------------------------------------------
+# System Notifications
+# ---------------------------------------------------------------------------
+
+
+class SystemNotificationCreate(BaseModel):
+    """Payload for emitting a persistent operational notification."""
+
+    source: str = "system"
+    kind: str = "runtime_blocker"
+    severity: str = "high"
+    message: str
+
+
+class SystemNotificationResponse(BaseModel):
+    """A persistent notification shown in the operational desktop."""
+
+    id: str
+    source: str
+    kind: str
+    severity: str
+    message: str
+    acknowledged: bool
+    acknowledged_at: Optional[datetime] = None
+    update_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
 
@@ -219,4 +259,5 @@ class DashboardStatusResponse(BaseModel):
     failed_evolutions: int = 0
     current_purpose_version: Optional[int] = None
     pending_inceptions: int = 0
+    active_notifications: int = 0
     last_evolution: Optional[EvolutionEventResponse] = None

@@ -17,9 +17,8 @@ from engine.models.backlog import (
     BacklogTaskStatus,
     BacklogTaskType,
 )
-from engine.models.evolution import EvolutionSource, EvolutionStatus
-from engine.models.purpose import Purpose, PurposeIdentity
-from engine.monitor.models import ContractProbeFailure, RuntimeSnapshot
+from engine.models.inception import InceptionRequest
+from engine.models.evolution import EvolutionStatus
 from engine.orchestrator import Orchestrator
 
 
@@ -237,6 +236,46 @@ def test_proactive_budget_status_blocks_when_daily_llm_calls_are_exhausted():
     assert snapshot["llm_calls"] == 5
 
 
+@pytest.mark.asyncio
+async def test_proactive_budget_exhaustion_updates_last_run_to_avoid_minute_loop():
+    """Budget exhaustion should throttle proactive retries instead of re-triggering every minute."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator._evolution_semaphore = asyncio.Semaphore(1)
+    orchestrator.daily_llm_calls_limit = 5
+    orchestrator.daily_input_tokens_limit = 500_000
+    orchestrator.daily_output_tokens_limit = 120_000
+    orchestrator.daily_proactive_runs_limit = 24
+    orchestrator.daily_failed_evolutions_limit = 10
+    orchestrator.usage_tracker = _UsageTrackerSnapshotStub(
+        {
+            "llm_calls": 5,
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "proactive_runs": 2,
+            "failed_evolutions": 0,
+        }
+    )
+    orchestrator._last_proactive_run = 0.0
+    published = []
+    notifications = []
+
+    async def _publish_usage_snapshot():
+        published.append(True)
+
+    async def _post_blocker_notification(message: str, *, severity: str = "high"):
+        notifications.append((message, severity))
+
+    orchestrator._publish_usage_snapshot = _publish_usage_snapshot
+    orchestrator._post_blocker_notification = _post_blocker_notification
+
+    result = await orchestrator._proactive_evolution()
+
+    assert result is True
+    assert orchestrator._last_proactive_run > 0
+    assert published == [True]
+    assert notifications
+
+
 def test_build_request_from_anomaly_tolerates_string_latency_values():
     """Runtime anomaly evidence can arrive as strings and must not crash the loop."""
     orchestrator = Orchestrator.__new__(Orchestrator)
@@ -256,6 +295,135 @@ def test_build_request_from_anomaly_tolerates_string_latency_values():
     request = orchestrator._build_request_from_anomaly(anomaly, snapshot)
 
     assert "950ms average latency" in request
+
+
+def test_build_request_from_missing_endpoint_anomaly_mentions_contract_repair():
+    """Broken mounted app contracts should produce a concrete repair request."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings()
+    anomaly = SimpleNamespace(
+        type=orchestrator_module.AnomalyType.MISSING_ENDPOINT,
+        evidence={"method": "POST", "path": "/api/v1/example-app/items/search"},
+        description=(
+            "Mounted app contract probe failed for POST "
+            "/api/v1/example-app/items/search: HTTP 405"
+        ),
+    )
+    snapshot = SimpleNamespace(
+        recent_errors=[],
+        global_error_rate=0.0,
+        total_errors=0,
+        total_requests=2,
+    )
+
+    request = orchestrator._build_request_from_anomaly(anomaly, snapshot)
+
+    assert "runtime contract is broken" in request
+    assert "valid empty-state response" in request
+    assert "/api/v1/example-app/items/search" in request
+
+
+@pytest.mark.asyncio
+async def test_run_fails_fast_when_no_purpose_is_defined():
+    """Triggered evolutions must be rejected until the instance has a Purpose."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.purpose = None
+    orchestrator.leader = SimpleNamespace(purpose=None)
+
+    events = []
+
+    async def post_event(ctx):
+        events.append(ctx)
+
+    async def fetch_purpose():
+        return None
+
+    async def execute_context(_ctx):
+        raise AssertionError("pipeline should not execute without a purpose")
+
+    orchestrator.event_reporter = SimpleNamespace(post_event=post_event)
+    orchestrator._fetch_purpose_from_api = fetch_purpose
+    orchestrator._execute_context = execute_context
+
+    ctx = await orchestrator.run("Add a dashboard")
+
+    assert ctx.status == EvolutionStatus.FAILED
+    assert "Purpose is not defined" in (ctx.error or "")
+    assert len(events) == 1
+    assert events[0].status == EvolutionStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_run_continuous_waits_idle_until_purpose_exists(monkeypatch):
+    """Continuous mode should stay idle instead of monitoring/evolving without a Purpose."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.config = EngineSettings(monitor_interval_seconds=7)
+    orchestrator.genesis = None
+    orchestrator.purpose = None
+    orchestrator.leader = SimpleNamespace(purpose=None)
+    orchestrator._purpose_synced = False
+
+    async def is_backend_available():
+        return True
+
+    orchestrator.event_reporter = SimpleNamespace(is_backend_available=is_backend_available)
+
+    async def fetch_purpose():
+        return None
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("engine should remain idle until a purpose exists")
+
+    orchestrator._fetch_purpose_from_api = fetch_purpose
+    orchestrator._mape_k_iteration = should_not_run
+    orchestrator._refresh_runtime_llm_config = should_not_run
+    orchestrator._refresh_runtime_guardrails = should_not_run
+    orchestrator._publish_usage_snapshot = should_not_run
+    orchestrator._process_pending_inceptions = should_not_run
+
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        orchestrator._running = False
+
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", fake_sleep)
+
+    await orchestrator.run_continuous()
+
+    assert sleep_calls == [7]
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_purpose_persists_api_purpose(tmp_path):
+    """Purpose fetched from the API should be saved locally for future archival."""
+
+    saved_paths: list[str] = []
+
+    class PurposeStub:
+        version = 2
+        identity = SimpleNamespace(name="Competitive Intelligence")
+
+        def save(self, path):
+            saved_paths.append(str(path))
+            path.write_text("purpose: persisted\n", encoding="utf-8")
+
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.purpose = None
+    orchestrator.leader = SimpleNamespace(purpose=None)
+    orchestrator.config = SimpleNamespace(purpose_path=tmp_path / "purpose.yaml")
+
+    async def fetch_purpose():
+        return PurposeStub()
+
+    orchestrator._fetch_purpose_from_api = fetch_purpose
+
+    loaded = await orchestrator._ensure_active_purpose()
+
+    assert loaded is True
+    assert saved_paths == [str(tmp_path / "purpose.yaml")]
+    assert orchestrator.leader.purpose is orchestrator.purpose
+    assert (tmp_path / "purpose.yaml").read_text(encoding="utf-8") == "purpose: persisted\n"
 
 
 @pytest.mark.asyncio
@@ -429,6 +597,93 @@ async def test_recover_stale_backlog_items_requeues_abandoned_in_progress_work()
     assert payload["started_at"] is None
 
 
+@pytest.mark.asyncio
+async def test_recover_resolved_blocked_backlog_items_requeues_contract_blocked_work():
+    """Resolved contract blockers should automatically reopen stalled roadmap items."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.event_reporter = _RecordingReporter()
+    orchestrator.config = EngineSettings(
+        monitor_url="http://backend:8000",
+        evolved_app_path="/tmp/evolved-app",
+    )
+    orchestrator._platform_contract_recovery_errors = lambda: []
+
+    async def no_runtime_errors():
+        return []
+
+    orchestrator._runtime_contract_recovery_errors = no_runtime_errors
+
+    recovered = await orchestrator._recover_resolved_blocked_backlog_items(
+        [
+            _backlog_item(
+                item_id="12",
+                task_key="contract_fix",
+                status=BacklogTaskStatus.BLOCKED,
+                failure_streak=3,
+                blocked_reason=(
+                    "Currently blocked by repeated deployment/runtime smoke-check failure: "
+                    "GET /api/v1/competitive-intelligence/statistics returns HTTP 500 after restart."
+                ),
+            ),
+            _backlog_item(
+                item_id="13",
+                task_key="provider_blip",
+                status=BacklogTaskStatus.BLOCKED,
+                failure_streak=2,
+                blocked_reason="503 Service Unavailable from provider",
+            ),
+        ]
+    )
+
+    assert recovered is True
+    assert orchestrator.event_reporter.updates == [
+        (
+            "12",
+            {
+                "status": BacklogTaskStatus.PENDING.value,
+                "failure_streak": 0,
+                "blocked_reason": None,
+                "retry_after": None,
+                "started_at": None,
+                "completed_at": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recover_resolved_blocked_backlog_items_waits_until_contracts_are_healthy():
+    """Blocked items stay blocked while live contract probes still fail."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    reporter = _RecordingReporter()
+    orchestrator.event_reporter = reporter
+    orchestrator.config = EngineSettings(
+        monitor_url="http://backend:8000",
+        evolved_app_path="/tmp/evolved-app",
+    )
+    orchestrator._platform_contract_recovery_errors = lambda: ["backend/app/api/v1/competitive_intelligence.py missing required markers: @router.get(\"/statistics\")"]
+
+    async def runtime_errors():
+        return ["GET /api/v1/competitive-intelligence/statistics -> HTTP 500"]
+
+    orchestrator._runtime_contract_recovery_errors = runtime_errors
+
+    recovered = await orchestrator._recover_resolved_blocked_backlog_items(
+        [
+            _backlog_item(
+                item_id="14",
+                task_key="contract_fix",
+                status=BacklogTaskStatus.BLOCKED,
+                failure_streak=3,
+                blocked_reason="Platform contract violation: missing required markers",
+            )
+        ]
+    )
+
+    assert recovered is False
+    assert reporter.updates == []
+
+
 def test_ensure_app_registered_sets_frontend_entry_metadata():
     """New app shells get a stable frontend entry derived from the app name."""
     orchestrator = Orchestrator.__new__(Orchestrator)
@@ -438,10 +693,10 @@ def test_ensure_app_registered_sets_frontend_entry_metadata():
     app_id = asyncio.run(
         orchestrator._ensure_app_registered(
             BacklogAppSpec(
-                name="Competitive Intelligence",
+                name="Example App",
                 icon="🔎",
-                goal="Research competitor companies",
-                features=[BacklogFeatureSpec(name="Company Discovery", description="Launch search UI")],
+                goal="Provide a starter product surface",
+                features=[BacklogFeatureSpec(name="Starter Search", description="Launch search UI")],
             )
         )
     )
@@ -449,20 +704,20 @@ def test_ensure_app_registered_sets_frontend_entry_metadata():
     assert app_id == "app-123"
     assert reporter.create_app_payloads == [
         {
-            "name": "Competitive Intelligence",
+            "name": "Example App",
             "icon": "🔎",
-            "goal": "Research competitor companies",
+            "goal": "Provide a starter product surface",
             "status": "building",
             "features": [
                 {
-                    "name": "Company Discovery",
+                    "name": "Starter Search",
                     "description": "Launch search UI",
                     "user_facing_description": "Launch search UI",
                     "capability_ids": [],
                 }
             ],
             "capability_ids": [],
-            "metadata_json": {"frontend_entry": "competitive-intelligence"},
+            "metadata_json": {"frontend_entry": "example-app"},
         }
     ]
 
@@ -510,6 +765,9 @@ async def test_refresh_runtime_llm_config_switches_provider_and_model(monkeypatc
     orchestrator.leader = SimpleNamespace(provider=None)
     orchestrator.generator = SimpleNamespace(provider=None)
     orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.usage_tracker = SimpleNamespace(
+        sync_llm_config_signature=lambda *args, **kwargs: ({}, False)
+    )
     orchestrator.event_reporter = _SettingsReporter(
         {
             "chat_llm_provider": "anthropic",
@@ -553,6 +811,9 @@ async def test_refresh_runtime_llm_config_falls_back_to_legacy_shared_settings(m
     orchestrator.leader = SimpleNamespace(provider=None)
     orchestrator.generator = SimpleNamespace(provider=None)
     orchestrator.purpose_evolver = SimpleNamespace(provider=None)
+    orchestrator.usage_tracker = SimpleNamespace(
+        sync_llm_config_signature=lambda *args, **kwargs: ({}, False)
+    )
     orchestrator.event_reporter = _SettingsReporter(
         {
             "llm_provider": "openai",
@@ -569,133 +830,97 @@ async def test_refresh_runtime_llm_config_falls_back_to_legacy_shared_settings(m
     assert isinstance(orchestrator.provider, DummyOpenAIProvider)
 
 
-def test_collect_runtime_incident_lessons_translates_structural_signals():
-    """Instance incidents should become reusable framework hardening lessons."""
+@pytest.mark.asyncio
+async def test_process_pending_inceptions_rejects_unexpected_processing_errors():
+    """Unexpected inception exceptions should be persisted as a rejection."""
+
+    class RaisingPurposeEvolver:
+        async def evolve(self, current_purpose, inception):
+            raise RuntimeError("LLM provider offline")
+
+    class InceptionReporter:
+        def __init__(self) -> None:
+            self.reported: list[tuple[str, object, bool]] = []
+
+        async def poll_inceptions(self):
+            return [
+                InceptionRequest(
+                    id="inc-1",
+                    source="human",
+                    directive="Tighten contract safety",
+                    rationale="Repeated drift needs a Purpose change",
+                    status="pending",
+                )
+            ]
+
+        async def report_inception_result(self, inception_id: str, result, accepted: bool):
+            self.reported.append((inception_id, result, accepted))
+
     orchestrator = Orchestrator.__new__(Orchestrator)
-    snapshot = RuntimeSnapshot(
-        contract_failures=[
-            ContractProbeFailure(
-                app_key="framework",
-                method="POST",
-                path="/api/v1/chat",
-                description="Chat route",
-                expected_statuses=[200],
-                status_code=404,
-                detail="Not Found",
-            )
-        ],
-        recent_errors=[
-            {
-                "path": "/api/v1/settings/engine_llm_provider",
-                "status_code": 401,
-                "detail": "Unauthorized",
-            },
-            {
-                "exception": "UndefinedColumn: column system_settings.is_secret does not exist",
-            },
-            {
-                "exception": (
-                    "AccessDeniedException: explicit deny on bedrock:InvokeModel after "
-                    "fallback to llm_provider=bedrock"
-                ),
-            },
-        ],
-    )
-    ctx = create_context(
-        "Repair live instance runtime incident",
-        source=EvolutionSource.MONITOR,
-        runtime_snapshot=snapshot,
-    ).transition(EvolutionStatus.COMPLETED)
+    orchestrator.purpose = SimpleNamespace(version=2)
+    orchestrator.purpose_evolver = RaisingPurposeEvolver()
+    orchestrator.event_reporter = InceptionReporter()
 
-    lessons = orchestrator._collect_runtime_incident_lessons(ctx)
-    titles = {lesson.title for lesson in lessons}
+    notifications: list[tuple[str, str]] = []
 
-    assert "Instance incidents must harden the open-source framework" in titles
-    assert "Promote critical instance routes into explicit runtime contracts" in titles
-    assert "Engine runtime settings endpoints must remain engine-readable" in titles
-    assert "Control-plane settings reads must tolerate schema drift" in titles
-    assert "Provider selection must fail closed when runtime config is unavailable" in titles
+    async def record_notification(message: str, *, severity: str = "high") -> None:
+        notifications.append((message, severity))
+
+    orchestrator._post_blocker_notification = record_notification
+
+    await orchestrator._process_pending_inceptions()
+
+    assert len(orchestrator.event_reporter.reported) == 1
+    inception_id, result, accepted = orchestrator.event_reporter.reported[0]
+    assert inception_id == "inc-1"
+    assert accepted is False
+    assert result.previous_purpose_version == 2
+    assert result.new_purpose_version == 2
+    assert "RuntimeError: LLM provider offline" in result.changes_summary
+    assert notifications
+    assert notifications[0][1] == "high"
+    assert "inc-1" in notifications[0][0]
 
 
 @pytest.mark.asyncio
-async def test_extract_lessons_from_runtime_incident_reuses_memory_store():
-    """Runtime incident lessons should go through idempotent memory persistence."""
+async def test_process_pending_inceptions_survives_failure_reporting_errors():
+    """A failed rejection write should be logged and not crash the loop."""
+
+    class RaisingPurposeEvolver:
+        async def evolve(self, current_purpose, inception):
+            raise RuntimeError("parse failure")
+
+    class InceptionReporter:
+        async def poll_inceptions(self):
+            return [
+                InceptionRequest(
+                    id="inc-2",
+                    source="human",
+                    directive="Update Purpose",
+                    rationale="",
+                    status="pending",
+                )
+            ]
+
+        async def report_inception_result(self, inception_id: str, result, accepted: bool):
+            raise RuntimeError("backend write failed")
+
     orchestrator = Orchestrator.__new__(Orchestrator)
-    reporter = _LessonReporter()
-    orchestrator.event_reporter = reporter
-    snapshot = RuntimeSnapshot(
-        contract_failures=[
-            ContractProbeFailure(
-                app_key="framework",
-                method="POST",
-                path="/api/v1/chat",
-                description="Chat route",
-                expected_statuses=[200],
-                status_code=404,
-                detail="Not Found",
-            )
-        ]
-    )
-    ctx = create_context(
-        "Repair missing chat route",
-        source=EvolutionSource.MONITOR,
-        runtime_snapshot=snapshot,
-    ).transition(EvolutionStatus.COMPLETED)
+    orchestrator.purpose = SimpleNamespace(version=4)
+    orchestrator.purpose_evolver = RaisingPurposeEvolver()
+    orchestrator.event_reporter = InceptionReporter()
 
-    await orchestrator._extract_lessons_from_runtime_incident(ctx)
+    notification_calls = 0
 
-    titles = [payload["title"] for payload in reporter.lessons]
-    assert "Instance incidents must harden the open-source framework" in titles
-    assert "Promote critical instance routes into explicit runtime contracts" in titles
+    async def record_notification(message: str, *, severity: str = "high") -> None:
+        nonlocal notification_calls
+        notification_calls += 1
 
+    orchestrator._post_blocker_notification = record_notification
 
-@pytest.mark.asyncio
-async def test_bootstrap_continuous_purpose_prefers_backend_over_repo_seed(tmp_path):
-    """A repo seed must not overwrite the purpose already persisted for this instance."""
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.config = EngineSettings(
-        purpose_path=tmp_path / ".engine-state" / "purpose.yaml",
-        purpose_history_path=tmp_path / ".engine-state" / "purpose_history",
-        purpose_seed_path=tmp_path / "purpose.yaml",
-    )
-    orchestrator.leader = SimpleNamespace(purpose=None)
-    orchestrator._purpose_synced = False
-    orchestrator.event_reporter = _PurposeBootstrapReporter(
-        backend_purpose=_purpose(name="Instance Purpose", version=7)
-    )
-    _purpose(name="Repo Seed", version=99).save(orchestrator.config.purpose_seed_path)
+    await orchestrator._process_pending_inceptions()
 
-    await orchestrator._bootstrap_continuous_purpose()
-
-    assert orchestrator.purpose is not None
-    assert orchestrator.purpose.identity.name == "Instance Purpose"
-    assert orchestrator.leader.purpose.identity.name == "Instance Purpose"
-    assert orchestrator.event_reporter.posted == []
-    persisted = Purpose.load(orchestrator.config.purpose_path)
-    assert persisted.identity.name == "Instance Purpose"
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_continuous_purpose_seeds_backend_once_when_empty(tmp_path):
-    """A fresh instance can seed from Git once, but stores the runtime copy outside the repo."""
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.config = EngineSettings(
-        purpose_path=tmp_path / ".engine-state" / "purpose.yaml",
-        purpose_history_path=tmp_path / ".engine-state" / "purpose_history",
-        purpose_seed_path=tmp_path / "purpose.yaml",
-    )
-    orchestrator.leader = SimpleNamespace(purpose=None)
-    orchestrator._purpose_synced = False
-    orchestrator.event_reporter = _PurposeBootstrapReporter(backend_purpose=None)
-    _purpose(name="Seed Purpose", version=3).save(orchestrator.config.purpose_seed_path)
-
-    await orchestrator._bootstrap_continuous_purpose()
-
-    assert orchestrator.purpose is not None
-    assert orchestrator.purpose.identity.name == "Seed Purpose"
-    assert orchestrator.event_reporter.posted == [("Seed Purpose", 3)]
-    assert orchestrator.config.purpose_path.exists()
-    assert not orchestrator.config.purpose_history_path.exists()
+    assert notification_calls == 0
 
 
 class _RecordingReporter:
@@ -728,28 +953,6 @@ class _SettingsReporter:
 
     async def get_setting(self, key: str):
         return self.values.get(key)
-
-
-class _LessonReporter:
-    def __init__(self) -> None:
-        self.lessons: list[dict[str, str]] = []
-
-    async def remember_lesson(self, **payload: str):
-        self.lessons.append(payload)
-        return f"lesson-{len(self.lessons)}"
-
-
-class _PurposeBootstrapReporter:
-    def __init__(self, backend_purpose: Purpose | None) -> None:
-        self.backend_purpose = backend_purpose
-        self.posted: list[tuple[str, int]] = []
-
-    async def fetch_purpose(self):
-        return self.backend_purpose
-
-    async def post_purpose(self, purpose: Purpose, inception_id: str | None = None):
-        self.posted.append((purpose.identity.name, purpose.version))
-        return True
 
 
 class _UsageTrackerStub:
@@ -796,6 +999,8 @@ def _backlog_item(
     failure_streak: int = 0,
     retry_after: datetime | None = None,
     started_at: datetime | None = None,
+    blocked_reason: str | None = None,
+    last_error: str | None = None,
 ) -> BacklogItem:
     return BacklogItem(
         id=item_id,
@@ -812,21 +1017,8 @@ def _backlog_item(
         depends_on=depends_on or [],
         attempt_count=attempt_count,
         failure_streak=failure_streak,
+        blocked_reason=blocked_reason,
+        last_error=last_error,
         retry_after=retry_after,
         started_at=started_at,
-    )
-
-
-def _purpose(name: str, version: int = 1) -> Purpose:
-    return Purpose(
-        version=version,
-        identity=PurposeIdentity(
-            name=name,
-            description=f"{name} description",
-        ),
-        functional_requirements=["Keep evolving safely."],
-        technical_requirements=["FastAPI + React"],
-        security_requirements=["No secrets in source control"],
-        constraints=["No infrastructure edits"],
-        evolution_directives=["Prefer minimal changes"],
     )

@@ -15,6 +15,7 @@ from collections import OrderedDict
 from engine.agents.base import BaseAgent
 from engine.context import EvolutionContext
 from engine.models.evolution import EvolutionPlan, EvolutionStatus, FileChange
+from engine.models.framework_invariants import FrameworkInvariants
 from engine.models.purpose import Purpose
 from engine.models.repo_map import FileNode, RepoMap
 from engine.providers.base import BaseLLMProvider
@@ -23,8 +24,10 @@ from engine.repo.scanner import canonicalize_frontend_app_key
 SYSTEM_PROMPT = """You are the Lead Architect of a self-evolving software system.
 
 Your job is to analyze a user's feature request and produce a structured evolution plan.
-Every decision you make must align with the system's Purpose — the guiding specification
-that defines what the system must achieve and maintain.
+Every decision you make must align with:
+1. The framework invariants — non-negotiable platform and safety rules shared by every instance
+2. The system's Purpose — the instance-specific specification that defines
+   what the system must achieve and maintain
 
 The managed application stack:
 - Frontend: React + TypeScript (Vite)
@@ -32,16 +35,19 @@ The managed application stack:
 - Database: PostgreSQL with Alembic migrations
 
 You receive:
-1. The system's Purpose (requirements, constraints, and evolution directives)
-2. The user's request in natural language
-3. A repository map showing the current state of the codebase
+1. The framework invariants
+2. The system's Purpose
+3. The user's request in natural language
+4. A repository map showing the current state of the codebase
 
-Before producing a plan, evaluate the request against the Purpose:
+Before producing a plan, evaluate the request against both the invariants and the Purpose:
+- Does it violate any framework/platform invariants?
+- Does it violate any safety invariants or operator invariants?
 - Does it align with the functional and technical requirements?
 - Does it violate any security requirements or constraints?
 - Does it follow the evolution directives?
-If the request conflicts with the Purpose, note this in your reasoning and adjust
-the plan to stay within the Purpose's boundaries.
+If the request conflicts with the invariants or the Purpose, note this in your reasoning and
+adjust the plan to stay within those boundaries.
 
 You must produce a JSON evolution plan specifying:
 - summary: a one-line description of the change
@@ -59,6 +65,8 @@ IMPORTANT CONSTRAINTS:
 - Each file change should be self-contained and not break existing functionality.
 - New API routers placed in `backend/app/api/v1/` are auto-registered by the framework.
   Do not plan changes to `backend/app/api/v1/__init__.py`.
+- Do not plan changes to `backend/app/main.py`; it is framework-owned backend shell
+  infrastructure and must remain stable for app startup and router mounting.
 - Do not plan changes to `backend/app/models/__init__.py`; new models should live in
   their own module files and be imported directly where used.
 - If the plan adds or changes persisted schema (tables, columns, indexes, foreign keys),
@@ -88,7 +96,7 @@ IMPORTANT CONSTRAINTS:
   `frontend/public/`. Reuse those exact public asset paths and do not silently move or duplicate
   them into app-module folders unless the change explicitly rewires all references.
 - When registering a desktop app, keep its frontend module key stable by using a slug derived
-  from the app name (for example `Competitive Intelligence` -> `competitive-intelligence`).
+  from the app name (for example `Example App` -> `example-app`).
 - If the repository map reports a path conflict for a frontend app root, plan a consolidation or
   stabilization slice before deepening that app further.
 - If a product app already has a mounted frontend surface, preserve its backend route contract
@@ -196,11 +204,13 @@ class LeaderAgent(BaseAgent):
         self,
         provider: BaseLLMProvider,
         purpose: Purpose | None = None,
+        framework_invariants: FrameworkInvariants | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.provider = provider
         self.purpose = purpose
+        self.framework_invariants = framework_invariants
 
     @property
     def name(self) -> str:
@@ -208,7 +218,11 @@ class LeaderAgent(BaseAgent):
 
     async def _execute(self, ctx: EvolutionContext) -> EvolutionContext:
         """Analyze the user request and produce an evolution plan."""
-        # Build the user prompt with purpose and repo context
+        # Build the user prompt with framework invariants, purpose, and repo context
+        framework_context = ""
+        if self.framework_invariants:
+            framework_context = f"\n\n{self.framework_invariants.to_prompt_context()}"
+
         purpose_context = ""
         if self.purpose:
             purpose_context = f"\n\n{self.purpose.to_prompt_context()}"
@@ -224,6 +238,7 @@ class LeaderAgent(BaseAgent):
 
         user_prompt = (
             f"## User Request\n{ctx.request.user_request}"
+            f"{framework_context}"
             f"{purpose_context}"
             f"{skills_context}"
             f"{repo_context}"

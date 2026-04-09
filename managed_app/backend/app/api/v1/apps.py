@@ -14,16 +14,22 @@ UI-facing endpoints:
   GET  /capabilities        — list all capabilities
 """
 
-from typing import List, Optional
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, select
+from sqlalchemy import desc, insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.auth import get_current_admin
 from app.database import get_db
-from app.models.admin import AdminUser
-from app.models.apps import AppRecord, CapabilityRecord, FeatureRecord, feature_capabilities, app_capabilities
+from app.models.apps import (
+    AppRecord,
+    CapabilityRecord,
+    FeatureRecord,
+    app_capabilities,
+    feature_capabilities,
+)
 from app.schemas.apps import (
     AppBrief,
     AppCreate,
@@ -36,6 +42,9 @@ from app.schemas.apps import (
 )
 
 router = APIRouter(prefix="/apps", tags=["apps"])
+logger = logging.getLogger(__name__)
+
+_APP_STATUSES = {"planned", "building", "active", "archived"}
 
 
 # ---------------------------------------------------------------------------
@@ -43,13 +52,20 @@ router = APIRouter(prefix="/apps", tags=["apps"])
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=List[AppBrief])
+@router.get("", response_model=list[AppBrief])
 async def list_apps(
-    status: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> list:
     """List all apps for the desktop. Returns brief info for icon display."""
-    query = select(AppRecord).order_by(desc(AppRecord.created_at))
+    query = (
+        select(AppRecord)
+        .options(
+            selectinload(AppRecord.features),
+            selectinload(AppRecord.capabilities),
+        )
+        .order_by(desc(AppRecord.created_at))
+    )
     if status:
         query = query.where(AppRecord.status == status)
     result = await db.execute(query)
@@ -75,13 +91,7 @@ async def get_app(
     db: AsyncSession = Depends(get_db),
 ) -> AppRecord:
     """Get full app detail with features and capabilities."""
-    result = await db.execute(
-        select(AppRecord).where(AppRecord.id == app_id)
-    )
-    record = result.scalar_one_or_none()
-    if not record:
-        raise HTTPException(status_code=404, detail="App not found")
-    return record
+    return await _load_app_record(db, app_id)
 
 
 @router.post("", response_model=AppResponse, status_code=201)
@@ -93,6 +103,15 @@ async def create_app(
 
     Can be called by the engine (no auth) or admin (with auth).
     """
+    _validate_app_status(payload.status)
+    existing = await _load_app_record_by_name(db, payload.name)
+    if existing is not None:
+        logger.warning("apps.create.duplicate_name name=%s", payload.name)
+        raise HTTPException(
+            status_code=409,
+            detail=f"App '{payload.name}' already exists",
+        )
+
     # Create app record
     app = AppRecord(
         name=payload.name,
@@ -103,7 +122,26 @@ async def create_app(
         metadata_json=payload.metadata_json,
     )
     db.add(app)
-    await db.flush()  # get app.id
+    try:
+        await db.flush()  # get app.id
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(
+            "apps.create.integrity_error name=%s error_type=%s error=%s",
+            payload.name,
+            type(exc).__name__,
+            str(exc),
+        )
+        existing = await _load_app_record_by_name(db, payload.name)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"App '{payload.name}' already exists",
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create app",
+        ) from exc
 
     # Link standalone capabilities
     if payload.capability_ids:
@@ -111,7 +149,9 @@ async def create_app(
             select(CapabilityRecord).where(CapabilityRecord.id.in_(payload.capability_ids))
         )
         for cap in result.scalars().all():
-            app.capabilities.append(cap)
+            await db.execute(
+                insert(app_capabilities).values(app_id=app.id, capability_id=cap.id)
+            )
 
     # Create features
     for feat_data in payload.features:
@@ -130,12 +170,15 @@ async def create_app(
                 select(CapabilityRecord).where(CapabilityRecord.id.in_(feat_data.capability_ids))
             )
             for cap in result.scalars().all():
-                feature.capabilities.append(cap)
+                await db.execute(
+                    insert(feature_capabilities).values(
+                        feature_id=feature.id,
+                        capability_id=cap.id,
+                    )
+                )
 
     await db.flush()
-    # Re-fetch to get all relationships loaded
-    await db.refresh(app)
-    return app
+    return await _load_app_record(db, app.id)
 
 
 @router.put("/{app_id}", response_model=AppResponse)
@@ -187,11 +230,15 @@ async def add_feature(
             select(CapabilityRecord).where(CapabilityRecord.id.in_(payload.capability_ids))
         )
         for cap in result.scalars().all():
-            feature.capabilities.append(cap)
+            await db.execute(
+                insert(feature_capabilities).values(
+                    feature_id=feature.id,
+                    capability_id=cap.id,
+                )
+            )
 
     await db.flush()
-    await db.refresh(feature)
-    return feature
+    return await _load_feature_record(db, feature.id)
 
 
 @router.put("/features/{feature_id}", response_model=FeatureResponse)
@@ -217,11 +264,11 @@ async def update_feature(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/capabilities/all", response_model=List[CapabilityResponse])
+@router.get("/capabilities/all", response_model=list[CapabilityResponse])
 async def list_capabilities(
-    status: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-) -> List[CapabilityRecord]:
+) -> list[CapabilityRecord]:
     """List all capabilities."""
     query = select(CapabilityRecord).order_by(desc(CapabilityRecord.created_at))
     if status:
@@ -307,3 +354,58 @@ def _default_icon(name: str) -> str:
         if keyword in name_lower:
             return icon
     return "\U0001f4e6"  # default: package emoji
+
+
+async def _load_app_record(db: AsyncSession, app_id: str) -> AppRecord:
+    """Load an app with nested relationships eagerly populated for API responses."""
+    result = await db.execute(
+        select(AppRecord)
+        .options(
+            selectinload(AppRecord.features).selectinload(FeatureRecord.capabilities),
+            selectinload(AppRecord.capabilities),
+        )
+        .where(AppRecord.id == app_id)
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="App not found")
+    return record
+
+
+async def _load_feature_record(db: AsyncSession, feature_id: str) -> FeatureRecord:
+    """Load a feature with capabilities eagerly populated for API responses."""
+    result = await db.execute(
+        select(FeatureRecord)
+        .options(selectinload(FeatureRecord.capabilities))
+        .where(FeatureRecord.id == feature_id)
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    return record
+
+
+async def _load_app_record_by_name(
+    db: AsyncSession,
+    name: str,
+) -> AppRecord | None:
+    """Return an eagerly loaded app when the name already exists."""
+    result = await db.execute(
+        select(AppRecord)
+        .options(
+            selectinload(AppRecord.features).selectinload(FeatureRecord.capabilities),
+            selectinload(AppRecord.capabilities),
+        )
+        .where(AppRecord.name == name)
+    )
+    return result.scalar_one_or_none()
+
+
+def _validate_app_status(status: str) -> None:
+    """Reject invalid status values with a clear client-facing error."""
+    if status not in _APP_STATUSES:
+        logger.warning("apps.create.invalid_status status=%s", status)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid app status '{status}'",
+        )

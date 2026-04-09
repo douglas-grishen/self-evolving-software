@@ -12,7 +12,7 @@ Two operating modes:
     python -m engine --continuous --dry-run   # observe only, never deploy
 
 In continuous mode the engine runs indefinitely until interrupted (Ctrl+C).
-It polls the Managed System, detects anomalies, and autonomously generates
+It polls the Operational Plane, detects anomalies, and autonomously generates
 and deploys fixes without any human input.
 """
 

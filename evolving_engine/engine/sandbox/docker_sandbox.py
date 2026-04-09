@@ -20,6 +20,7 @@ from engine.config import EngineSettings, settings
 from engine.context import EvolutionContext
 from engine.models.evolution import ValidationResult
 from engine.repo.scanner import canonicalize_frontend_app_key, extract_frontend_app_modules
+from engine.runtime_contracts import get_platform_file_contracts
 from engine.sandbox.base import BaseSandbox
 
 logger = structlog.get_logger()
@@ -27,6 +28,10 @@ logger = structlog.get_logger()
 _AUTO_MANAGED_PLAN_PATHS = {
     "backend/app/api/v1/__init__.py",
     "backend/app/models/__init__.py",
+}
+
+_BACKEND_SHELL_PATHS = {
+    "backend/app/main.py",
 }
 
 _DESKTOP_SHELL_PATHS = {
@@ -59,6 +64,10 @@ _REQUIRED_DESKTOP_MENU_LABELS = (
 )
 
 _REQUIRED_PLATFORM_FILES = {
+    "backend/app/main.py": (
+        "app.include_router(v1_router)",
+        '@app.get("/health")',
+    ),
     "frontend/src/App.tsx": (
         "toggle(\"chat\")",
         "toggle(\"cost\")",
@@ -84,19 +93,6 @@ _REQUIRED_PLATFORM_FILES = {
     ),
 }
 
-_CONDITIONAL_PLATFORM_CONTRACTS = (
-    {
-        "trigger": "frontend/src/apps/competitive-intelligence",
-        "required_file": "backend/app/api/v1/competitive_intelligence.py",
-        "markers": (
-            'APIRouter(prefix="/competitive-intelligence"',
-            '@router.get("/statistics")',
-            '@router.post("/companies/search")',
-        ),
-        "description": "Competitive Intelligence app contract",
-    },
-)
-
 _SANDBOX_COPY_IGNORE = shutil.ignore_patterns(
     "__pycache__",
     ".git",
@@ -119,7 +115,11 @@ def _request_allows_desktop_shell_changes(request_text: str) -> bool:
     return any(keyword in text for keyword in _DESKTOP_SHELL_KEYWORDS)
 
 
-def _validate_platform_contract_files(app_path: Path, request_text: str) -> list[str]:
+def _validate_platform_contract_files(
+    app_path: Path,
+    request_text: str,
+    contracts_path: Path | None = None,
+) -> list[str]:
     """Validate framework-owned platform capabilities that product work must preserve."""
     errors: list[str] = []
     allows_shell_change = _request_allows_desktop_shell_changes(request_text)
@@ -156,29 +156,29 @@ def _validate_platform_contract_files(app_path: Path, request_text: str) -> list
                     f"{preview}"
                 )
 
-    for contract in _CONDITIONAL_PLATFORM_CONTRACTS:
-        trigger_path = app_path / contract["trigger"]
+    for contract in get_platform_file_contracts(contracts_path):
+        trigger_path = app_path / contract.trigger
         if not trigger_path.exists():
             continue
 
-        required_file = app_path / contract["required_file"]
+        required_file = app_path / contract.required_file
         if not required_file.exists():
             errors.append(
                 "Platform contract violation: "
-                f"{contract['description']} is missing required backend file "
-                f"{contract['required_file']}"
+                f"{contract.description} is missing required backend file "
+                f"{contract.required_file}"
             )
             continue
 
         content = required_file.read_text(encoding="utf-8")
         missing_markers = [
-            marker for marker in contract["markers"] if marker not in content
+            marker for marker in contract.markers if marker not in content
         ]
         if missing_markers:
             preview = ", ".join(missing_markers[:4])
             errors.append(
                 "Platform contract violation: "
-                f"{contract['required_file']} is missing required markers: {preview}"
+                f"{contract.required_file} is missing required markers: {preview}"
             )
 
     return errors
@@ -217,6 +217,14 @@ def _validate_plan_contract(context: EvolutionContext) -> list[str]:
             "Desktop shell files are protected platform infrastructure and may not be "
             f"changed for a product-app request: {preview}. Integrate product apps "
             "through frontend/src/apps/ and AppViewer instead."
+        )
+
+    backend_shell_paths = sorted(expected_paths & _BACKEND_SHELL_PATHS)
+    if backend_shell_paths:
+        preview = ", ".join(backend_shell_paths)
+        errors.append(
+            "Backend shell files are protected platform infrastructure and may not be "
+            f"changed by autonomous product work: {preview}."
         )
 
     has_migration = any(
@@ -314,7 +322,7 @@ class DockerSandbox(BaseSandbox):
         evolved_app_path = Path(self.config.evolved_app_path).resolve()
         if (evolved_app_path / "frontend").exists() and (evolved_app_path / "backend").exists():
             return evolved_app_path
-        return Path(self.config.managed_app_path).resolve()
+        return Path(self.config.operational_plane_path).resolve()
 
     def _sandbox_tmp_root(self) -> Path:
         """Use a configurable temp root so production can mount a real tmpfs."""
@@ -408,6 +416,7 @@ class DockerSandbox(BaseSandbox):
         platform_errors = _validate_platform_contract_files(
             sandbox_app,
             context.request.user_request,
+            self.config.runtime_contracts_path,
         )
         if platform_errors:
             errors.extend(platform_errors)

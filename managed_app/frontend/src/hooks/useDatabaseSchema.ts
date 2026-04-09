@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 
-interface Column {
+export interface Column {
   name: string;
   type: string;
   nullable: boolean;
   default: string | null;
 }
 
-interface DatabaseSchema {
+export interface DatabaseSchema {
   tables: string[];
   columns: Record<string, Column[]>;
 }

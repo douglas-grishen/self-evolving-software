@@ -1,12 +1,19 @@
-.PHONY: help setup dev dev-backend dev-engine stop \
-        test test-backend test-engine \
+.PHONY: help venv setup dev dev-backend dev-engine stop \
+        test test-backend test-engine test-infra \
         lint lint-fix \
         build build-backend build-frontend build-engine \
-        cdk-bootstrap cdk-synth cdk-diff cdk-deploy \
+        cdk-bootstrap cdk-synth cdk-diff cdk-deploy preflight-instance \
         evolve evolve-dry evolve-continuous evolve-continuous-dry \
+        backup-instance restore-instance \
         clean
 
 SHELL := /bin/bash
+REPO_ROOT := $(CURDIR)
+PYTHON_RUNNER := $(REPO_ROOT)/scripts/run-python.sh
+PYTHON_CMD := bash $(PYTHON_RUNNER)
+PIP := $(PYTHON_CMD) -m pip
+PYTEST := $(PYTHON_CMD) -m pytest
+RUFF := $(PYTHON_CMD) -m ruff
 
 # ─── Deploy configuration ────────────────────────────────────────────────────
 # Personal deployment values live in infra/deploy.env (gitignored — never committed).
@@ -17,7 +24,8 @@ export
 
 AWS_PROFILE    ?= default
 AWS_REGION     ?= us-east-1
-GITHUB_OWNER   ?=
+INSTANCE_KEY   ?= base
+GITHUB_OWNER   ?= douglas-grishen
 GITHUB_REPO    ?= self-evolving-software
 GITHUB_BRANCH  ?= main
 CONNECTION_ARN ?=
@@ -26,6 +34,7 @@ SSH_CIDR       ?= 0.0.0.0/0
 # CDK context flags built from the variables above.
 # Nothing personal is ever hardcoded in source files.
 CDK_CONTEXT = \
+  --context instance_key=$(INSTANCE_KEY) \
   --context github_owner=$(GITHUB_OWNER) \
   --context github_repo=$(GITHUB_REPO) \
   --context github_branch=$(GITHUB_BRANCH) \
@@ -39,15 +48,21 @@ help: ## Show this help message
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
 # ─── Setup ──────────────────────────────────────────────────────────────────
-setup: ## First-time project setup (install all dependencies)
+venv: ## Create or refresh the local Python 3.11+ virtual environment
+	@if [ ! -x "$(REPO_ROOT)/.venv/bin/python" ]; then \
+		echo "==> Creating .venv with Python 3.11+..."; \
+		bash $(PYTHON_RUNNER) -m venv "$(REPO_ROOT)/.venv"; \
+	fi
+
+setup: venv ## First-time project setup (install all dependencies)
 	@echo "==> Installing backend dependencies..."
-	cd managed_app/backend && pip install -e ".[dev]"
+	cd managed_app/backend && $(PIP) install -e ".[dev]"
 	@echo "==> Installing frontend dependencies..."
 	cd managed_app/frontend && npm install
 	@echo "==> Installing evolving engine dependencies..."
-	cd evolving_engine && pip install -e ".[dev]"
+	cd evolving_engine && $(PIP) install -e ".[dev]"
 	@echo "==> Installing CDK dependencies..."
-	cd infra && pip install -r requirements.txt
+	cd infra && $(PIP) install -r requirements.txt
 	@echo "==> Setup complete!"
 
 # ─── Development ────────────────────────────────────────────────────────────
@@ -66,28 +81,33 @@ stop: ## Stop all running containers
 # ─── Testing ────────────────────────────────────────────────────────────────
 test: ## Run all test suites
 	@echo "==> Running backend tests..."
-	cd managed_app/backend && python -m pytest tests/ -v
+	cd managed_app/backend && $(PYTEST) tests/ -v
 	@echo "==> Running engine tests..."
-	cd evolving_engine && python -m pytest tests/ -v
+	cd evolving_engine && $(PYTEST) tests/ -v
+	@echo "==> Running infrastructure tests..."
+	$(PYTHON_CMD) -m pytest infra/tests -v
 	@echo "==> All tests passed!"
 
 test-backend: ## Run backend tests only
-	cd managed_app/backend && python -m pytest tests/ -v
+	cd managed_app/backend && $(PYTEST) tests/ -v
 
 test-engine: ## Run engine tests only
-	cd evolving_engine && python -m pytest tests/ -v
+	cd evolving_engine && $(PYTEST) tests/ -v
+
+test-infra: ## Run infrastructure and deploy-flow tests only
+	$(PYTHON_CMD) -m pytest infra/tests -v
 
 # ─── Linting ────────────────────────────────────────────────────────────────
 lint: ## Run linters on all Python code
 	@echo "==> Linting backend..."
-	cd managed_app/backend && ruff check app/ tests/
+	cd managed_app/backend && $(RUFF) check app/ tests/
 	@echo "==> Linting engine..."
-	cd evolving_engine && ruff check engine/ tests/
+	cd evolving_engine && $(RUFF) check engine/ tests/
 	@echo "==> All clean!"
 
 lint-fix: ## Auto-fix linting issues
-	cd managed_app/backend && ruff check --fix app/ tests/
-	cd evolving_engine && ruff check --fix engine/ tests/
+	cd managed_app/backend && $(RUFF) check --fix app/ tests/
+	cd evolving_engine && $(RUFF) check --fix engine/ tests/
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 build: ## Build all Docker images
@@ -123,7 +143,7 @@ cdk-synth: ## Synthesize CloudFormation templates (no AWS calls)
 cdk-diff: ## Show pending infrastructure changes
 	cd infra && cdk diff --profile $(AWS_PROFILE) $(CDK_CONTEXT)
 
-cdk-deploy: ## Deploy all stacks to AWS
+cdk-deploy: preflight-instance ## Deploy all stacks to AWS
 	@echo "==> Deploying to AWS (profile: $(AWS_PROFILE), region: $(AWS_REGION))..."
 	@[ -n "$(GITHUB_OWNER)" ] || (echo "ERROR: GITHUB_OWNER is not set. Edit infra/deploy.env."; exit 1)
 	@[ -n "$(CONNECTION_ARN)" ] || (echo "ERROR: CONNECTION_ARN is not set. Edit infra/deploy.env."; exit 1)
@@ -131,6 +151,9 @@ cdk-deploy: ## Deploy all stacks to AWS
 	  --profile $(AWS_PROFILE) \
 	  $(CDK_CONTEXT) \
 	  --require-approval broadening
+
+preflight-instance: ## Validate deploy inputs and tracked seeds before creating a new instance
+	$(PYTHON_CMD) scripts/preflight_instance.py
 
 cdk-destroy: ## Destroy all stacks (WARNING: deletes all cloud resources)
 	cd infra && cdk destroy --all \
@@ -140,16 +163,25 @@ cdk-destroy: ## Destroy all stacks (WARNING: deletes all cloud resources)
 
 # ─── Engine CLI ─────────────────────────────────────────────────────────────
 evolve: ## Triggered mode — single evolution (usage: make evolve REQ="Add products CRUD")
-	cd evolving_engine && python -m engine "$(REQ)"
+	cd evolving_engine && $(PYTHON_CMD) -m engine "$(REQ)"
 
 evolve-dry: ## Triggered mode — dry run (usage: make evolve-dry REQ="Add products CRUD")
-	cd evolving_engine && python -m engine --dry-run "$(REQ)"
+	cd evolving_engine && $(PYTHON_CMD) -m engine --dry-run "$(REQ)"
 
 evolve-continuous: ## Continuous mode — autonomous MAPE-K loop (Ctrl+C to stop)
-	cd evolving_engine && python -m engine --continuous
+	cd evolving_engine && $(PYTHON_CMD) -m engine --continuous
 
 evolve-continuous-dry: ## Continuous mode — observe and plan but never deploy
-	cd evolving_engine && python -m engine --continuous --dry-run
+	cd evolving_engine && $(PYTHON_CMD) -m engine --continuous --dry-run
+
+# ─── Instance Operations ────────────────────────────────────────────────────
+backup-instance: ## Create a backup bundle of the live instance state (set BACKUP_DIR=... to override)
+	bash scripts/backup_instance.sh $(BACKUP_DIR)
+
+restore-instance: ## Restore a backup bundle into the live instance (usage: make restore-instance BACKUP_DIR=/path/to/backup FORCE=1)
+	@[ -n "$(BACKUP_DIR)" ] || (echo "ERROR: BACKUP_DIR is required."; exit 1)
+	@[ "$(FORCE)" = "1" ] || (echo "ERROR: Set FORCE=1 to acknowledge destructive restore."; exit 1)
+	FORCE=1 bash scripts/restore_instance.sh "$(BACKUP_DIR)"
 
 # ─── Cleanup ────────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts, caches, and temp files

@@ -1,21 +1,21 @@
 ###############################################################################
 # Local development docker-compose
 #
-# Architecture: MAPE-K — three Docker networks enforce subsystem boundaries
-#   managed-system:      postgres ↔ backend ↔ frontend
-#   control-plane:       engine → backend (runtime monitoring)
-#   autonomic-manager:   engine (LLM, sandbox, Git)
+# Architecture: two planes with three Docker networks enforcing boundaries
+#   operational-plane:   Operational Plane traffic (postgres ↔ backend ↔ frontend)
+#   control-plane:       Evolution Plane → Operational Plane observation
+#   evolution-plane:     Evolution Plane internals (LLM, sandbox, Git)
 #
 # Usage:
-#   docker compose up                          # Managed System only
-#   docker compose --profile engine up         # + Autonomic Manager
+#   docker compose up                          # Operational Plane only
+#   docker compose --profile engine up         # + Evolution Plane
 #   docker compose up backend                  # Backend + postgres only
 #   docker compose logs -f engine              # Follow engine logs
 ###############################################################################
 
 
 # =============================================================================
-# MANAGED SYSTEM — The web application under autonomous management
+# OPERATIONAL PLANE — The user-facing workload under autonomous evolution
 # =============================================================================
 
 services:
@@ -35,9 +35,9 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - managed-system
+      - operational-plane
     labels:
-      com.ses.subsystem: "managed-system"
+      com.ses.subsystem: "operational-plane"
 
   backend:
     build:
@@ -57,10 +57,10 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - managed-system
+      - operational-plane
       - control-plane
     labels:
-      com.ses.subsystem: "managed-system"
+      com.ses.subsystem: "operational-plane"
 
   frontend:
     build:
@@ -75,13 +75,13 @@ services:
     depends_on:
       - backend
     networks:
-      - managed-system
+      - operational-plane
     labels:
-      com.ses.subsystem: "managed-system"
+      com.ses.subsystem: "operational-plane"
 
 
 # =============================================================================
-# AUTONOMIC MANAGER — AI engine with continuous MAPE-K loop
+# EVOLUTION PLANE — AI engine with continuous MAPE-K loop
 # Profile-gated: only starts when explicitly requested via --profile engine
 # Self-evolution enabled: can modify both managed_app/ and evolving_engine/
 # =============================================================================
@@ -90,12 +90,13 @@ services:
     build: ./evolving_engine
     environment:
       # --- Scope ---
-      ENGINE_MANAGED_APP_PATH: /workspace/managed_app
+      ENGINE_OPERATIONAL_PLANE_PATH: /workspace/managed_app
       ENGINE_SELF_PATH: /workspace/evolving_engine
       ENGINE_WORKSPACE_PATH: /tmp/evo_workspace
       ENGINE_SANDBOX_TMP_DIR: /sandbox-tmp
       ENGINE_USAGE_STATE_PATH: /tmp/evolving_engine_usage.json
       ENGINE_REPO_ROOT: /workspace
+      ENGINE_FRAMEWORK_INVARIANTS_PATH: /workspace/framework_invariants.yaml
       # --- Runtime monitoring ---
       ENGINE_MONITOR_URL: http://backend:8000
       ENGINE_MONITOR_INTERVAL_SECONDS: "30"
@@ -116,27 +117,27 @@ services:
       - /sandbox-tmp:size=1024m,mode=1777
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
-      - autonomic-manager
+      - evolution-plane
       - control-plane
     profiles:
       - engine
     labels:
-      com.ses.subsystem: "autonomic-manager"
+      com.ses.subsystem: "evolution-plane"
 
 
 # =============================================================================
-# NETWORKS — Three isolated networks enforce MAPE-K boundaries
+# NETWORKS — plane-oriented internal identifiers
 # =============================================================================
 
 networks:
-  managed-system:
-    name: managed-system-dev
+  operational-plane:
+    name: operational-plane-dev
     driver: bridge
   control-plane:
     name: control-plane-dev
     driver: bridge
-  autonomic-manager:
-    name: autonomic-manager-dev
+  evolution-plane:
+    name: evolution-plane-dev
     driver: bridge
 
 volumes:

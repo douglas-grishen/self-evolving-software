@@ -1,24 +1,29 @@
 #!/bin/bash
 # CodeDeploy hook: stop running services before deployment
-set -e
+set -euo pipefail
 
-APP_DIR="/opt/self-evolving-software"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/scripts/common.sh
+. "$SCRIPT_DIR/common.sh"
 
-if [ -f "$APP_DIR/docker-compose.prod.yml" ]; then
-    echo "Stopping services..."
-    cd "$APP_DIR"
-    docker compose -f docker-compose.prod.yml down --timeout 30 || true
+load_instance_environment
+
+if [ -f "$FRAMEWORK_ROOT/$COMPOSE_FILE" ]; then
+    echo "Stopping services for compose project $COMPOSE_PROJECT..."
+    compose_cmd down --timeout 30 || true
     echo "Services stopped."
 else
-    echo "No existing deployment found, skipping stop."
+    echo "No existing deployment found at $FRAMEWORK_ROOT, skipping stop."
 fi
 
-# CodeDeploy copies the new bundle into APP_DIR with fileExistsBehavior=DISALLOW.
-# If the new revision adds files that are not present in the old tree, the Install
-# phase fails before our AfterInstall hooks run. Clear the previous framework tree
-# up front while preserving the instance-local .env backup path used by install.sh.
-if [ -d "$APP_DIR" ]; then
+if [ -d "$FRAMEWORK_ROOT" ]; then
     echo "Cleaning previous framework tree..."
-    find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name ".env" -exec rm -rf {} +
+    find "$FRAMEWORK_ROOT" -mindepth 1 -maxdepth 1 ! -name ".env" -exec rm -rf {} +
     echo "Framework tree cleaned."
+fi
+
+if [ -d "$BUNDLE_ROOT" ]; then
+    echo "Cleaning previous CodeDeploy bundle tree..."
+    find "$BUNDLE_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    echo "Bundle tree cleaned."
 fi

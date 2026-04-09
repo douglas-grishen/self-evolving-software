@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Operational Plane"
-    app_version: str = "1.1.5"
+    app_version: str = "1.1.10"
     debug: bool = False
     environment: str = "development"
 
@@ -26,6 +26,12 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: list[str] = ["http://localhost:5173"]
+
+    # External notifications
+    notification_webhook_url: str = ""
+    notification_webhook_bearer_token: str = ""
+    notification_webhook_min_severity: str = "critical"
+    notification_webhook_timeout_seconds: float = 5.0
 
     model_config = {"env_prefix": "APP_", "env_file": ".env", "extra": "ignore"}
 
