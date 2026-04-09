@@ -9,10 +9,10 @@ from engine.usage_tracker import UsageTracker
 def test_sync_llm_config_signature_sets_initial_signature_without_reset(tmp_path):
     tracker = UsageTracker(tmp_path / "usage.json")
 
-    snapshot, reset_applied = tracker.sync_llm_config_signature("openai|gpt-5.4")
+    snapshot, reset_applied = tracker.sync_llm_config_signature(("openai", "gpt-5.4"))
 
     assert reset_applied is False
-    assert snapshot["llm_config_signature"] == "openai|gpt-5.4"
+    assert snapshot["llm_config_signature"] == '["openai", "gpt-5.4"]'
     assert snapshot["proactive_runs"] == 0
     assert snapshot["failed_evolutions"] == 0
 
@@ -39,17 +39,17 @@ def test_sync_llm_config_signature_resets_proactive_budget_on_change(tmp_path):
                 "models": {},
             }
         },
-        "llm_config_signature": "bedrock|claude",
+        "llm_config_signature": '["bedrock", "claude"]',
     }
     tracker.state_path.write_text(json.dumps(state), encoding="utf-8")
 
     snapshot, reset_applied = tracker.sync_llm_config_signature(
-        "openai|gpt-5.4",
+        ("openai", "gpt-5.4"),
         reset_proactive_counters_on_change=True,
     )
 
     assert reset_applied is True
-    assert snapshot["llm_config_signature"] == "openai|gpt-5.4"
+    assert snapshot["llm_config_signature"] == '["openai", "gpt-5.4"]'
     assert snapshot["proactive_runs"] == 0
     assert snapshot["failed_evolutions"] == 0
     assert snapshot["task_attempts"] == {}

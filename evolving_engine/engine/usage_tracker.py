@@ -106,7 +106,7 @@ class UsageTracker:
 
     def sync_llm_config_signature(
         self,
-        signature: str,
+        signature: object,
         *,
         reset_proactive_counters_on_change: bool = False,
     ) -> tuple[dict[str, Any], bool]:
@@ -116,10 +116,10 @@ class UsageTracker:
         safety counters are reset when the operator switches the engine to a new
         runtime provider/model configuration and asks to recover from the old one.
         """
-        normalized = (signature or "").strip()
+        normalized = self._normalize_signature(signature)
         with _STATE_LOCK:
             state = self._load_unlocked()
-            previous = str(state.get("llm_config_signature") or "").strip()
+            previous = self._normalize_signature(state.get("llm_config_signature"))
             reset_applied = False
 
             if (
@@ -184,3 +184,12 @@ class UsageTracker:
             encoding="utf-8",
         )
         tmp_path.replace(self.state_path)
+
+    @staticmethod
+    def _normalize_signature(signature: object) -> str:
+        """Serialize comparable runtime LLM signatures into a stable string."""
+        if signature in (None, ""):
+            return ""
+        if isinstance(signature, str):
+            return signature.strip()
+        return json.dumps(signature, sort_keys=True, default=str)
