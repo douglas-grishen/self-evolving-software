@@ -145,6 +145,11 @@ def _frontend_entry_key(app_name: str) -> str:
     return canonicalize_frontend_app_key(app_name)
 
 
+def _canonical_backlog_retry_key(task_key: str) -> str:
+    """Collapse planner version suffixes so repeated retries keep one identity."""
+    return re.sub(r"_v\d+$", "", task_key)
+
+
 @dataclass
 class BacklogProbeState:
     """Operational view of whether the persisted backlog can advance."""
@@ -1325,11 +1330,24 @@ set of tasks that can be executed across multiple autonomous runs.
 
         blocked_frontier = self._inspect_backlog_items(items).blocked_frontier_item
         if blocked_frontier is not None:
+            frontier_base_key = _canonical_backlog_retry_key(blocked_frontier.task_key)
+            sibling_retries = [
+                item for item in items
+                if _canonical_backlog_retry_key(item.task_key) == frontier_base_key
+                and item.task_key != blocked_frontier.task_key
+                and item.status in {BacklogTaskStatus.BLOCKED, BacklogTaskStatus.ABANDONED}
+            ]
             constraints.append(
                 f"- `{blocked_frontier.task_key}` is the blocked frontier. Keep it blocked "
                 "unless the new scope is materially narrower and explicitly aimed at removing "
                 "the recorded blocker."
             )
+            if sibling_retries:
+                constraints.append(
+                    f"- Do not create another version-suffixed retry for `{frontier_base_key}`. "
+                    "Reuse the same task_key when the scope is unchanged, or leave the work "
+                    "blocked until a truly different dependency or fix is available."
+                )
 
         if not constraints:
             return ""

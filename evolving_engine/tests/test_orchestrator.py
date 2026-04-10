@@ -260,6 +260,36 @@ def test_build_backlog_stability_constraints_flags_discovery_schema_drift():
     assert "Do not plan a single task that mixes discovery migrations with frontend/UI changes" in constraints
 
 
+def test_build_backlog_stability_constraints_rejects_version_suffix_retry_churn():
+    """Repeated blocked siblings should stop the planner from minting v2/v3 task keys."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="stabilize_ai_projects_hub_frontend_contract_minimal_v3",
+            status=BacklogTaskStatus.BLOCKED,
+            blocked_reason="frontend build still failing",
+        ),
+        _backlog_item(
+            item_id="2",
+            task_key="stabilize_ai_projects_hub_frontend_contract_minimal_v2",
+            status=BacklogTaskStatus.ABANDONED,
+            blocked_reason="Removed from replanned backlog",
+        ),
+        _backlog_item(
+            item_id="3",
+            task_key="stabilize_ai_projects_hub_frontend_contract_minimal",
+            status=BacklogTaskStatus.ABANDONED,
+            blocked_reason="Removed from replanned backlog",
+        ),
+    ]
+
+    constraints = orchestrator._build_backlog_stability_constraints(items)
+
+    assert "Do not create another version-suffixed retry" in constraints
+    assert "stabilize_ai_projects_hub_frontend_contract_minimal" in constraints
+
+
 def test_proactive_budget_status_blocks_when_daily_llm_calls_are_exhausted():
     """Daily budgets should put proactive work into safe mode before another loop burns cost."""
     orchestrator = Orchestrator.__new__(Orchestrator)
