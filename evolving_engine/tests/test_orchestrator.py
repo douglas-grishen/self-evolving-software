@@ -211,6 +211,55 @@ def test_backlog_replan_reason_reports_blocked_frontier():
     assert orchestrator._backlog_replan_reason(items) == "blocked_frontier:timeline_build:blocked"
 
 
+def test_build_backlog_stability_constraints_flags_frontend_build_failures():
+    """Repeated frontend build failures should narrow future backlog planning."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="stabilize_ai_projects_hub_frontend_contract",
+            status=BacklogTaskStatus.BLOCKED,
+            failure_streak=3,
+            blocked_reason=(
+                "Currently blocked by repeated failed execution attempts with frontend "
+                "Docker build errors; next retry should remain a minimal frontend-only repair."
+            ),
+            last_error=(
+                "Docker build failed for frontend: The command '/bin/sh -c npm run build' "
+                "returned a non-zero code: 1"
+            ),
+        )
+    ]
+
+    constraints = orchestrator._build_backlog_stability_constraints(items)
+
+    assert "minimal frontend-only stabilization task" in constraints
+    assert "avoid pairing UI work with schema, API, or observability changes" in constraints
+    assert "`stabilize_ai_projects_hub_frontend_contract` is the blocked frontier" in constraints
+
+
+def test_build_backlog_stability_constraints_flags_discovery_schema_drift():
+    """Discovery migration failures should push the planner toward schema-first hardening."""
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    items = [
+        _backlog_item(
+            item_id="1",
+            task_key="add_configurable_github_search_criteria_observability",
+            failure_streak=1,
+            last_error=(
+                "Generated output does not cover all planned files: "
+                "backend/alembic/versions/<next_head>_github_run_criteria_obs.py\n"
+                "Alembic revisions must have exactly one head before deploy."
+            ),
+        )
+    ]
+
+    constraints = orchestrator._build_backlog_stability_constraints(items)
+
+    assert "Discovery schema drift is active" in constraints
+    assert "Do not plan a single task that mixes discovery migrations with frontend/UI changes" in constraints
+
+
 def test_proactive_budget_status_blocks_when_daily_llm_calls_are_exhausted():
     """Daily budgets should put proactive work into safe mode before another loop burns cost."""
     orchestrator = Orchestrator.__new__(Orchestrator)

@@ -121,6 +121,22 @@ _RECOVERABLE_CONTRACT_BLOCK_PATTERNS = (
     re.compile(r"missing required markers", re.IGNORECASE),
     re.compile(r"contract .* healthy", re.IGNORECASE),
 )
+_FRONTEND_BUILD_FAILURE_PATTERNS = (
+    re.compile(r"docker build failed for frontend", re.IGNORECASE),
+    re.compile(r"npm run build", re.IGNORECASE),
+    re.compile(r"desktop shell must preserve core system windows", re.IGNORECASE),
+)
+_DISCOVERY_SCHEMA_FAILURE_PATTERNS = (
+    re.compile(r"unexpectedly missing discovery tables", re.IGNORECASE),
+    re.compile(r"multiple alembic heads", re.IGNORECASE),
+    re.compile(r"alembic revisions must have exactly one head", re.IGNORECASE),
+    re.compile(
+        r"generated output does not cover all planned files: backend/alembic/versions/",
+        re.IGNORECASE,
+    ),
+    re.compile(r"missing discovery tables", re.IGNORECASE),
+    re.compile(r"schema drift", re.IGNORECASE),
+)
 _INCEPTION_FAILURE_SUMMARY_LIMIT = 400
 
 
@@ -1056,6 +1072,7 @@ class Orchestrator:
                     codebase_summary=codebase_summary,
                     apps_summary=apps_summary,
                     backlog_summary=backlog_summary,
+                    backlog_items=existing_backlog,
                 )
                 if plan is None:
                     logger.warning("proactive.backlog_plan_failed")
@@ -1140,9 +1157,11 @@ class Orchestrator:
         codebase_summary: str,
         apps_summary: str,
         backlog_summary: str,
+        backlog_items: list[BacklogItem],
     ) -> BacklogPlannerResponse | None:
         """Ask the fast model for a small persistent roadmap aligned to Purpose."""
         purpose_context = self.purpose.to_prompt_context()
+        stability_constraints = self._build_backlog_stability_constraints(backlog_items)
 
         planning_prompt = f"""You are the proactive roadmap planner for a self-evolving software system.
 
@@ -1160,6 +1179,8 @@ set of tasks that can be executed across multiple autonomous runs.
 
 ## Current Persisted Backlog
 {backlog_summary}
+
+{stability_constraints}
 
 ## Planning Rules
 - Return the FULL desired backlog for the current Purpose, not just one task
@@ -1261,6 +1282,59 @@ set of tasks that can be executed across multiple autonomous runs.
             if item.retry_after:
                 lines.append(f"  retry_after: {item.retry_after.isoformat()}")
         return "\n".join(lines)
+
+    def _backlog_failure_evidence(self, items: list[BacklogItem]) -> str:
+        """Return a compact blob of historical failure evidence from the backlog."""
+        evidence_parts: list[str] = []
+        for item in items:
+            snippets = [part for part in (item.blocked_reason, item.last_error) if part]
+            if not snippets:
+                continue
+            evidence_parts.append(f"{item.task_key}: {' | '.join(snippets)}")
+        return "\n".join(evidence_parts)
+
+    def _build_backlog_stability_constraints(self, items: list[BacklogItem]) -> str:
+        """Summarize recurring failure modes so the planner narrows scope."""
+        evidence = self._backlog_failure_evidence(items)
+        if not evidence:
+            return ""
+
+        constraints: list[str] = []
+        if any(pattern.search(evidence) for pattern in _FRONTEND_BUILD_FAILURE_PATTERNS):
+            constraints.append(
+                "- Repeated frontend build failures are active. Do not schedule another "
+                "frontend feature slice until the backlog includes one minimal frontend-only "
+                "stabilization task that preserves the desktop shell and only repairs build or "
+                "contract compatibility."
+            )
+            constraints.append(
+                "- When frontend build failures are active, avoid pairing UI work with schema, "
+                "API, or observability changes in the same task."
+            )
+
+        if any(pattern.search(evidence) for pattern in _DISCOVERY_SCHEMA_FAILURE_PATTERNS):
+            constraints.append(
+                "- Discovery schema drift is active. Treat discovery as a fragile subsystem: "
+                "stabilize schema and read contracts before adding provenance, observability, "
+                "or new dynamic discovery behavior."
+            )
+            constraints.append(
+                "- Do not plan a single task that mixes discovery migrations with frontend/UI "
+                "changes. Use schema-only or API-contract-only hardening slices first."
+            )
+
+        blocked_frontier = self._inspect_backlog_items(items).blocked_frontier_item
+        if blocked_frontier is not None:
+            constraints.append(
+                f"- `{blocked_frontier.task_key}` is the blocked frontier. Keep it blocked "
+                "unless the new scope is materially narrower and explicitly aimed at removing "
+                "the recorded blocker."
+            )
+
+        if not constraints:
+            return ""
+
+        return "## Current Stability Constraints\n" + "\n".join(constraints)
 
     def _select_next_backlog_item(self, items: list[BacklogItem]) -> BacklogItem | None:
         """Pick the next actionable backlog item, preferring resumed work and ready retries."""
